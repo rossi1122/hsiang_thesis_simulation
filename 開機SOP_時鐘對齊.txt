@@ -1,0 +1,57 @@
+# 讓筆電時間對齊
+
+**到這個網頁下載**
+
+https://www.meinbergglobal.com/english/sw/ntp.htm#ntp_stable
+
+**在ntp.conf.txt插入這三行(通常檔案在C:\Program Files (x86)\NTP\etc\ntp.conf)** 
+
+server time.google.com iburst
+server time.cloudflare.com iburst
+server pool.ntp.org iburst
+
+**重啟 Meinberg 服務**
+
+**系統管理員cmd輸入**
+
+net stop NTP
+net start NTP
+
+**過30秒再檢驗，在cmd輸入**
+
+"C:\Program Files (x86)\NTP\bin\ntpq.exe" -p
+
+============================================================
+ jeep / 飛機 雙機實驗 — 開機與分析 SOP (Meinberg 版)
+============================================================
+
+兩台機器:
+  飛機端 PC  = 192.168.50.140
+  jeep 筆電  = 192.168.50.39
+
+★ 現況:筆電已裝 Meinberg NTP,開機自動持續對齊 google。
+  兩台時鐘從此 ≈ 一致 (殘差 ~14ms ≈ 0.14m,可當 0),而且不會再漂。
+
+  分析直接 python cep_analysis.py --wallclock 就好。
+
+
+
+
+============================================================
+ 每次實驗流程 (超精簡)
+============================================================
+
+【步驟 1】兩台開機,等 1~2 分鐘
+  - 讓 Meinberg / 時間服務跟 google 收斂穩定。
+  - 用系統管理員打開cmd
+  - 重啟NTP輸入
+     net stop NTP & net start NTP
+
+【步驟 2】確認連接google時鐘狀態輸入
+
+	"C:\Program Files (x86)\NTP\bin\ntpq.exe" -p
+
+【步驟 3】在pc端打開cmd輸入
+w32tm /stripchart /computer:192.168.50.39 /samples:5 /dataonly
+
+確認兩台電腦時間差多少
