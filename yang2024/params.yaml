@@ -1,0 +1,56 @@
+# Yang et al. 2024, Drones 8(4):136 — 參數集中在這裡
+# 對應論文 Table 1；論文沒寫、由本專案補上的值都標註「補」並記錄在 docs/reproduction_log.md
+
+# ---------- Table 1 ----------
+V_t: 16.0          # 飛機空速 [m/s]
+H: 100.0           # 飛行高度 [m]
+R_M: 100.0         # 最大清楚感知水平距離 [m]
+dR: 10.0           # ΔR，g2 提早作用的距離 [m] (Eq. 27)
+R_d: 50.0          # 期望盤旋半徑 [m]，決定 alpha = atan(H / R_d) (Eq. 7)
+u_max: 0.5         # |u_psi| 上限 [rad/s] (Eq. 12)
+a_max: 0.02        # |Δu_psi| 上限 [rad/s，每一步] (Eq. 13)
+dt: 0.05           # 取樣時間 [s]
+Q_s: [0.5, 2.0]    # J1 的 s2 權重 diag{q1, q2} (Eq. 22)
+Q_u: 1.0e+6        # Δu_psi 權重 (Eq. 22, 33)
+Q_sg: [1.0, 1.0]   # J_g 的 s3 權重 (Eq. 33)
+delta: 0.99        # 收縮係數 (Eq. 24, 35, 37)
+beta_1: 1.0e+4     # 感知範圍軟約束 (Eq. 28)
+beta_2: 1.0e+3     # CC1 軟約束 (Eq. 29)
+beta_g: 1.0e+3     # CC_g 軟約束 (Eq. 36)
+f: 537.0           # 焦距 [px]
+N_p: 15            # 預測步數
+n_max: 100         # 切換計數器上限 (Eq. 40–42)
+
+# ---------- 論文沒寫、本專案補上 ----------
+a_2: 1.0e+3        # 補：Eq. 38 的 a2 不在 Table 1，暫用 beta_2 的值
+# 切換對應（Eq. 40 與文字、證明互相矛盾，三種都可選）：
+#   text   : n1=0 → J_g，0<n1<n_max → J_2，n1=n_max → J_1   （CLAUDE.md 採用，預設）
+#   proof  : n1=0 → J_g，0<n1<n_max → J_1，n1=n_max → J_2   （Section 3.3 證明的寫法）
+#   literal: n1=0 → J_1，0<n1<n_max → J_2，n1=n_max → J_g   （Eq. 40 字面）
+switch_mapping: text
+cc2_on: s2         # 補：Eq. 37 寫 u3/v3，但文字與證明是 u2/v2；可選 s2 或 s3
+depth_model: geometric   # 補：Eq. 8 的 z_c。geometric = H·f/(v2·cosα + f·sinα)；const = 用 depth_const
+depth_const: 100.0
+smooth_eps: 1.0e-6 # 補：|x|、‖x‖ 在 0 不可微，用 sqrt(x² + eps) 平滑
+hinge_eps: 1.0e-3  # 補：β·max{x,0} 的平滑寬度（相對值）；0 = 照論文用不可微的 max
+
+# ---------- 雲台（前作 Yang 2021 JIRS Eq. 19–20，與 2024 HITL 的角度範圍） ----------
+gimbal_lambda: [0.5, 0.5]       # λu、λv（前作 HIL：P_e 全部元素 0.5）
+gimbal_tilt_range: [-1.55, 0.17] # θ_t 範圍 [rad]（2024 Section 5.1）
+gimbal_rate_max: 3.0             # 補：雲台最大角速度 [rad/s]，數值模擬只當保護用
+
+# ---------- LSM 對照組（前作 Yang 2021 JIRS Eq. 13–17） ----------
+lsm_lambda: [0.5, 0.5]  # λ1、λ2
+lsm_depth: 100.0        # 前作的 z_d = 100
+
+# ---------- 數值模擬設定（Section 4） ----------
+uav_init: [-85.0, 0.0]      # 初始位置 [m]（論文寫 (-85, 0, 50)，高度用 H）
+uav_heading_init: 1.5707963267948966  # π/2
+u_psi_init: 0.0             # 補：k = -1 時的 u_psi（直線飛行）
+target_init: [0.0, 0.0]
+target_heading_init: 0.0    # 補：目標沿 +x 前進（對照 Fig. 4a）
+image_size: [1280, 720]     # 只用來標記是否出視野（HITL 的解析度），不影響控制
+
+# ---------- 求解器 ----------
+ipopt_max_iter: 200
+ipopt_tol: 1.0e-6

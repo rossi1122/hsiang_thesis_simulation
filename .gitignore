@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .vscode/
 docs/*.pdf
+results/**/*.npz
+.pytest_cache/
