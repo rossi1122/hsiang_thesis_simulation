@@ -1,0 +1,105 @@
+{
+  "experiment": "fig6",
+  "date": "2026-11-15T18:33:54",
+  "V_c": 6.0,
+  "T": 500.0,
+  "metrics": {
+    "switch": {
+      "rmse_s2_px": 101.1294775193901,
+      "rmse_s2_norm_x537": 101.1294775193901,
+      "R_max_m": 94.33242682034825,
+      "R_min_m": 25.22489237533221,
+      "time_outside_RM_s": 0.0,
+      "outside_episodes": 0,
+      "longest_outside_s": 0.0,
+      "u_sat_ratio": 0.1967,
+      "solve_time_mean_ms": 1.689609414600028,
+      "solve_time_max_ms": 9.594655000000785,
+      "solve_failures": 0,
+      "out_of_fov_ratio": 0.0,
+      "duration_s": 500.00000000000006,
+      "wall_time_s": 20.2
+    },
+    "lsm": {
+      "rmse_s2_px": 174.59913632640672,
+      "rmse_s2_norm_x537": 174.59913632640672,
+      "R_max_m": 178.23647748090582,
+      "R_min_m": 14.124194939885683,
+      "time_outside_RM_s": 119.9,
+      "outside_episodes": 9,
+      "longest_outside_s": 25.700000000000003,
+      "u_sat_ratio": 0.1309,
+      "solve_time_mean_ms": 0.0,
+      "solve_time_max_ms": 0.0,
+      "solve_failures": 0,
+      "out_of_fov_ratio": 0.0,
+      "duration_s": 500.00000000000006,
+      "wall_time_s": 1.1
+    }
+  },
+  "params": {
+    "V_t": 16.0,
+    "H": 100.0,
+    "R_M": 100.0,
+    "dR": 10.0,
+    "R_d": 50.0,
+    "u_max": 0.5,
+    "a_max": 0.02,
+    "dt": 0.05,
+    "Q_s": [
+      0.5,
+      2.0
+    ],
+    "Q_u": 1000000.0,
+    "Q_sg": [
+      1.0,
+      1.0
+    ],
+    "delta": 0.99,
+    "beta_1": 10000.0,
+    "beta_2": 1000.0,
+    "beta_g": 1000.0,
+    "f": 537.0,
+    "N_p": 15,
+    "n_max": 100,
+    "a_2": 1000.0,
+    "switch_mapping": "text",
+    "cc2_on": "s2",
+    "depth_model": "geometric",
+    "depth_const": 100.0,
+    "smooth_eps": 1e-06,
+    "hinge_eps": 0.001,
+    "gimbal_lambda": [
+      0.5,
+      0.5
+    ],
+    "gimbal_tilt_range": [
+      -1.55,
+      0.17
+    ],
+    "gimbal_rate_max": 3.0,
+    "lsm_lambda": [
+      0.5,
+      0.5
+    ],
+    "lsm_depth": 100.0,
+    "uav_init": [
+      -85.0,
+      0.0
+    ],
+    "uav_heading_init": 1.5707963267948966,
+    "u_psi_init": 0.0,
+    "target_init": [
+      0.0,
+      0.0
+    ],
+    "target_heading_init": 0.0,
+    "image_size": [
+      1280,
+      720
+    ],
+    "ipopt_max_iter": 200,
+    "ipopt_tol": 1e-06
+  },
+  "python": "3.13.18"
+}
