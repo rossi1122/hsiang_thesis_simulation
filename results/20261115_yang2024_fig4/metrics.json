@@ -1,6 +1,6 @@
 {
   "experiment": "fig4",
-  "date": "2026-11-15T18:33:11",
+  "date": "2026-11-15T18:57:05",
   "V_c": 7.0,
   "T": 150.0,
   "metrics": {
@@ -13,12 +13,12 @@
       "outside_episodes": 0,
       "longest_outside_s": 0.0,
       "u_sat_ratio": 0.21666666666666667,
-      "solve_time_mean_ms": 1.8147479996670957,
-      "solve_time_max_ms": 7.672548000016377,
+      "solve_time_mean_ms": 1.908662846998368,
+      "solve_time_max_ms": 7.67709299998387,
       "solve_failures": 0,
       "out_of_fov_ratio": 0.0,
       "duration_s": 150.00000000000003,
-      "wall_time_s": 6.6,
+      "wall_time_s": 7.0,
       "paper_rmse_px": 153.63
     },
     "lsm": {
@@ -35,7 +35,7 @@
       "solve_failures": 0,
       "out_of_fov_ratio": 0.0,
       "duration_s": 150.00000000000003,
-      "wall_time_s": 0.3,
+      "wall_time_s": 0.4,
       "paper_rmse_px": 226.55
     }
   },

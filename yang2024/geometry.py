@@ -74,6 +74,23 @@ def to_ideal(u1, v1, pan, tilt, alpha, f, pitch=0.0, roll=0.0):
     return f * r[0] / r[2], f * r[1] / r[2]
 
 
+def ideal_and_down(u1, v1, pan, tilt, alpha, f, pitch=0.0, roll=0.0, min_cos=0.01):
+    """一次算出 Ideal State (u2, v2)、垂直相機 (u3, v3)，並判斷 (u2, v2) 是否有效。
+
+    Ideal 相機朝右側看；目標在飛機左側超過 H·tanα（= H²/R_d = 200 m）時會跑到這台
+    虛擬相機後方，(u2, v2) 沒有定義（論文沒處理）。valid = 與光軸夾角 < arccos(min_cos)。
+    (u3, v3) 直接由射線算：垂直朝下相機對地面目標永遠有效，有效時與 Eq. 54 相同。
+    """
+    ray_body = camera_rows(pan, tilt).T @ np.array([u1, v1, f])
+    ray_level = rot_y(-pitch) @ rot_x(roll) @ ray_body
+    r2 = camera_rows(-np.pi / 2, -alpha) @ ray_level
+    r3 = camera_rows(-np.pi / 2, -np.pi / 2) @ ray_level
+    valid = r2[2] > min_cos * np.linalg.norm(r2)
+    u2 = f * r2[0] / r2[2] if valid else np.nan
+    v2 = f * r2[1] / r2[2] if valid else np.nan
+    return u2, v2, f * r3[0] / r3[2], f * r3[1] / r3[2], bool(valid)
+
+
 def ideal_to_down(u2, v2, alpha, f):
     """Eq. 15 / Eq. 54：Ideal State (u2, v2) → 垂直朝下虛擬相機 (u3, v3)。"""
     den = v2 * np.cos(alpha) + f * np.sin(alpha)

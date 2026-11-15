@@ -81,3 +81,18 @@ def test_ideal_depth():
     u2, v2 = _ideal_feature(target, uav, 0.0)
     z_true = (g.camera_rows(-np.pi / 2, -ALPHA) @ (target - uav))[2]
     assert np.isclose(g.ideal_depth(v2, ALPHA, F, H), z_true)
+
+
+def test_ideal_and_down_matches_eq54_and_flags_invalid():
+    """有效時 (u3, v3) 與 Eq. 54 相同；目標在左側很遠時 (u2, v2) 標為無效。"""
+    uav = np.array([0.0, 0.0, H])
+    for target, expect_valid in [((300.0, 0.0, 0.0), True), ((30.0, -80.0, 0.0), True),
+                                 ((0.0, 400.0, 0.0), False)]:
+        pan, tilt = g.pointing_angles(target, uav, 0.0)
+        u1, v1, _ = g.project(target, uav, 0.0, pan, tilt, F)
+        u2, v2, u3, v3, valid = g.ideal_and_down(u1, v1, pan, tilt, ALPHA, F)
+        assert valid == expect_valid
+        u3d, v3d, _ = g.project(target, uav, 0.0, -np.pi / 2, -np.pi / 2, F)
+        assert np.allclose([u3, v3], [u3d, v3d], atol=1e-6)
+        if valid:
+            assert np.allclose([u3, v3], g.ideal_to_down(u2, v2, ALPHA, F), atol=1e-6)

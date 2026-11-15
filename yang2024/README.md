@@ -16,6 +16,8 @@ python -m yang2024.experiments fig5         # P1,soft vs 提出方法，V_c = 9 
 python -m yang2024.experiments fig6         # 目標複雜運動，500 s
 python -m yang2024.experiments all
 ```
+- 遠距離起始（Phase 1 第 2 步，老師疑慮 (1)）：`python -m yang2024.far_start`（30 組，4 行程平行約 1 分鐘；`--quick` 只跑 300 m 直線）。
+  結果在 `results/<日期>_yang2024_far_start/`：`summary.md` 表格、R 對時間圖、軌跡圖。
 - 結果存到 `results/<日期>_yang2024_<實驗>/`：比較圖、`metrics.json`（RMSE、R 最大值、超出 R_M 的時間、求解時間、u_ψ 飽和比例）、實際使用的參數。
 - 覆寫參數：`--set switch_mapping=proof hinge_eps=0`；縮短模擬：`--T 30`。
 
@@ -30,6 +32,7 @@ python -m yang2024.experiments all
 | `sim.py` | 閉迴路模擬 | Algorithm 1 |
 | `metrics.py` | CLAUDE.md 第 6 節要求的指標 | — |
 | `experiments.py` | Fig. 4–6 的實驗設定與輸出 | Section 4 |
+| `far_start.py` | 從目標後方 300/500 m 起始、V_c = 5/10/15、目標轉彎 | （論文沒有，回答老師疑慮 (1)） |
 | `tests/` | 用數值微分驗證 Eq. 8、Eq. 54、穩態盤旋等 | — |
 
 ## 座標慣例（細節見 `geometry.py` 開頭）

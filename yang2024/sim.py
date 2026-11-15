@@ -18,7 +18,7 @@ CONTROLLERS = ("lsm", "p1soft", "switch")
 
 LOG_KEYS = ("t", "x", "y", "psi", "tx", "ty", "u_psi", "mode", "n1",
             "u1", "v1", "u2", "v2", "u3", "v3", "g1", "R", "pan", "tilt",
-            "solve_time", "solve_ok", "visible", "in_fov", "target_speed")
+            "solve_time", "solve_ok", "visible", "in_fov", "ideal_valid", "target_speed")
 
 
 def simulate(params, controller="switch", Vc=7.0, T=150.0, target_profile=None,
@@ -50,6 +50,7 @@ def simulate(params, controller="switch", Vc=7.0, T=150.0, target_profile=None,
     U = None
     switcher = None
     last_s1 = (0.0, 0.0)
+    last_s2 = (0.0, 0.0)
     steps = int(round(T / dt))
 
     for k in range(steps):
@@ -62,8 +63,11 @@ def simulate(params, controller="switch", Vc=7.0, T=150.0, target_profile=None,
         last_s1 = (u1, v1)
         in_fov = visible and abs(u1) <= W / 2 and abs(v1) <= Himg / 2
 
-        u2, v2 = geo.to_ideal(u1, v1, gimbal.pan, gimbal.tilt, alpha, f)
-        u3, v3 = geo.ideal_to_down(u2, v2, alpha, f)
+        u2, v2, u3, v3, ideal_valid = geo.ideal_and_down(u1, v1, gimbal.pan, gimbal.tilt, alpha, f)
+        if ideal_valid:
+            last_s2 = (u2, v2)
+        else:  # 目標在 Ideal 相機後方（論文未定義）：控制器沿用上一次有效的 s2
+            u2, v2 = last_s2
         g1 = geo.perception_g(u3, v3, f, p["R_M"], H)
 
         mode, n1, solve_time, ok = "LSM", -1, 0.0, True
@@ -88,7 +92,7 @@ def simulate(params, controller="switch", Vc=7.0, T=150.0, target_profile=None,
                    mode=mode, n1=n1, u1=u1, v1=v1, u2=u2, v2=v2, u3=u3, v3=v3, g1=g1,
                    R=float(np.hypot(target.x - x, target.y - y)),
                    pan=gimbal.pan, tilt=gimbal.tilt, solve_time=solve_time,
-                   solve_ok=ok, visible=visible, in_fov=in_fov,
+                   solve_ok=ok, visible=visible, in_fov=in_fov, ideal_valid=ideal_valid,
                    target_speed=target.command(t)[0])
         for key in LOG_KEYS:
             log[key].append(rec[key])
