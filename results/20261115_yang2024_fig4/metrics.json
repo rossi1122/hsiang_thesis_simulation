@@ -1,6 +1,6 @@
 {
   "experiment": "fig4",
-  "date": "2026-11-15T18:57:05",
+  "date": "2026-11-15T20:02:03",
   "V_c": 7.0,
   "T": 150.0,
   "metrics": {
@@ -13,12 +13,12 @@
       "outside_episodes": 0,
       "longest_outside_s": 0.0,
       "u_sat_ratio": 0.21666666666666667,
-      "solve_time_mean_ms": 1.908662846998368,
-      "solve_time_max_ms": 7.67709299998387,
+      "solve_time_mean_ms": 1.6797802370003487,
+      "solve_time_max_ms": 24.906493999992563,
       "solve_failures": 0,
       "out_of_fov_ratio": 0.0,
       "duration_s": 150.00000000000003,
-      "wall_time_s": 7.0,
+      "wall_time_s": 6.1,
       "paper_rmse_px": 153.63
     },
     "lsm": {
@@ -100,6 +100,9 @@
       1280,
       720
     ],
+    "yaw_tau": 0.0,
+    "bank_in_camera": false,
+    "gravity": 9.81,
     "ipopt_max_iter": 200,
     "ipopt_tol": 1e-06
   },

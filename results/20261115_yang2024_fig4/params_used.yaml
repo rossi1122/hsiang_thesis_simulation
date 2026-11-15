@@ -50,5 +50,8 @@ target_heading_init: 0.0
 image_size:
 - 1280
 - 720
+yaw_tau: 0.0
+bank_in_camera: false
+gravity: 9.81
 ipopt_max_iter: 200
 ipopt_tol: 1.0e-06
