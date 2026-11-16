@@ -1,0 +1,74 @@
+"""run_yang / step_test / camera_check 共用：建立連線、紀錄、存檔。"""
+import csv
+import json
+import math
+from datetime import datetime
+
+import numpy as np
+
+from .config import build, log_dir
+from .fake_xplane import FakeXPlane, RealClock
+from .xp_link import XPLink
+
+
+def setup(dry_run=False, jeep_speed=None, **scale_overrides):
+    """回傳 (link, clock, params, xp, k)。dry_run 用假的 X-Plane。"""
+    params, xp, k = build(**scale_overrides)
+    if dry_run:
+        speed = jeep_speed if jeep_speed is not None else xp["scenario"]["jeep_speed_paper"] * k["k_V"]
+        fake = FakeXPlane(jeep_speed=speed)
+        return XPLink(xp, client=fake, clock=fake.now), fake, params, xp, k
+    clock = RealClock()
+    return XPLink(xp, clock=clock.now), clock, params, xp, k
+
+
+def wait_for_jeep(link, clock, timeout=10.0):
+    t0 = clock.now()
+    while clock.now() - t0 < timeout:
+        st = link.read()
+        if st.jeep_ok:
+            return st
+        clock.sleep(0.2)
+    raise RuntimeError("讀不到吉普車位置：確認筆電的 X-Plane 有開、多人連線有設定、"
+                       "飛機 PC 的「設定 → 網路 → 接收數據」看得到 192.168.50.39")
+
+
+class Recorder:
+    def __init__(self):
+        self.rows = []
+
+    def add(self, **row):
+        self.rows.append(row)
+
+    def column(self, key):
+        return np.array([r.get(key, np.nan) for r in self.rows], dtype=float)
+
+    def save_csv(self, path):
+        if not self.rows:
+            return
+        keys = list(self.rows[0].keys())
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=keys)
+            w.writeheader()
+            w.writerows(self.rows)
+
+
+def output_dir(xp, name):
+    d = log_dir(xp) / f"{datetime.now():%Y%m%d_%H%M%S}_{name}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def save_json(path, obj):
+    def clean(o):
+        if isinstance(o, dict):
+            return {k: clean(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [clean(v) for v in o]
+        if isinstance(o, (np.floating, float)):
+            return None if not math.isfinite(float(o)) else float(o)
+        if isinstance(o, np.integer):
+            return int(o)
+        return o
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(clean(obj), fh, ensure_ascii=False, indent=2)

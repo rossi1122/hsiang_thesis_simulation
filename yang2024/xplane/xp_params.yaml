@@ -1,0 +1,76 @@
+# Yang 2024 在 X-Plane 11（SP80）的設定
+# 論文參數（yang2024/params.yaml）會依下面的尺度自動換算，見 config.py 與 docs/reproduction_log.md
+
+# ---------- 尺度：保持論文的無因次量不變 ----------
+# 長度比 k_L = H / 100、速度比 k_V = V_t / 16、時間比 k_T = k_L / k_V
+# V_t = 30、H = 300 → k_L = 3、k_V = 1.875、k_T = 1.6
+#   R_d = 150 m、R_M = 300 m、ΔR = 30 m、u_max = 0.3125 rad/s（坡度約 44°、轉彎半徑 96 m）
+#   Δt = 0.08 s（MPC 12.5 Hz）、N_p 仍是 15 步（預測 1.2 s）、目標速度 V_c × 1.875
+scaling:
+  V_t: 30.0
+  H: 300.0
+
+# ---------- X-Plane 相機（學長環境：全螢幕 1920×1080、橫向視場 60°、擷取時切掉上方 30 px） ----------
+camera:
+  render_width: 1920
+  render_height: 1080
+  hfov_deg: 60.0
+  crop_top: 30
+  capture_height: 1010
+  head_pitch_bias_deg: 8.5   # 學長量到的 pilots_head_the 與真實光軸的固定偏差
+  head_psi_sign: -1          # pilots_head_psi 往右為正；本專案 pan 往左為正
+
+# ---------- 連線 ----------
+link:
+  host: localhost
+  port: 49009
+  timeout_ms: 1000
+  jeep_index: 1              # 多人連線的第幾架（筆電的吉普車通常是 1）
+
+# ---------- 主迴圈 ----------
+loop:
+  control_hz: 50             # 內迴路與雲台送出頻率（實際以真實經過時間計算）
+  max_time_s: 300
+  min_agl_ratio: 0.33        # 離地高度 < 0.33·H 就暫停模擬（安全）
+  log_dir: results/xplane    # 相對 repo 根目錄
+
+# ---------- 內迴路（傾斜轉彎 + 定高 + 定速）；角度單位 deg，第一次飛要用 step_test 調 ----------
+autopilot:
+  bank_limit_deg: 45.0
+  # 滾轉：aileron = k_phi·(φ_cmd − φ) + k_phi_i·∫ − k_p·p
+  k_phi: 0.04
+  k_phi_i: 0.004
+  k_p: 0.012
+  ail_limit: 0.6
+  # 協調轉彎：rudder = k_r·(r_ref − r)，r_ref = g·sinφ / V
+  k_r: 0.04
+  rud_limit: 0.3
+  # 高度 → 俯仰角 → 俯仰率 → 升降舵（後兩段沿用學長 K_theta、K_q）
+  theta_trim_deg: 2.0
+  k_h: 0.08                  # deg / m
+  k_h_i: 0.004               # deg / (m·s)
+  k_hdot: 0.8                # deg / (m/s)
+  bank_pitch_comp_deg: 8.0   # 轉彎時加的抬頭量 × (1/cosφ − 1)
+  theta_limit_deg: [-12.0, 15.0]
+  K_theta: 3.0
+  K_q: 0.06
+  elev_limit: 1.0
+  # 空速 → 油門
+  thr_trim: 0.45
+  k_v: 0.08                  # 1 / (m/s)
+  k_v_i: 0.02
+  thr_limit: [0.0, 1.0]
+
+# ---------- 起始位置（相對吉普車；x 沿吉普車前進方向，y 往吉普車左側） ----------
+scenario:
+  # paper：論文 Section 4，飛機在目標後方 85 m、航向和目標垂直（往左） → 乘上 k_L
+  # far  ：飛機在目標正後方 far_distance、同方向（回答老師疑慮 (1)）
+  start: paper
+  far_distance: 900.0
+  jeep_speed_paper: 7.0      # 論文的 V_c；實際吉普車速度 = 這個 × k_V，跑 jeep_controller.py 時要給這個值
+
+# ---------- 開迴路階躍測試（Phase 2） ----------
+step_test:
+  hold_s: 20.0
+  step_s: 15.0
+  steps: [0.1, 0.0, -0.1, 0.0, 0.2, 0.0, -0.2, 0.0, 0.3125, 0.0, -0.3125, 0.0]   # u_psi 命令 [rad/s]

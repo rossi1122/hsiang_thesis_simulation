@@ -1,0 +1,303 @@
+"""Yang 2024 在 X-Plane 11 的閉迴路（Stage 3 真值特徵 / Stage 4 YOLO）。
+
+每個 MPC 週期（Δt，縮放後 0.08 s）—— 對應論文 Algorithm 1：
+  1. 量測目標特徵 (u1, v1)：
+       truth：用吉普車真值投影（理想偵測，先驗證控制本身）
+       yolo ：學長的 YOLO 執行緒；用影像擷取當下的姿態與雲台角度做轉換
+  2. 轉成 Ideal State (u2, v2)、垂直相機 (u3, v3)、g1（Eq. 7、15、20）
+  3. 切換式 MPC / P1,soft / LSM 算出 u_psi（和數值模擬同一份程式）
+  4. 雲台律（Eq. 9）算出雲台角速度
+每一圈（control_hz，預設 50 Hz）：
+  傾斜轉彎內迴路把 u_psi 變成副翼、方向舵、升降舵、油門；雲台角度依真實經過時間積分後送出。
+
+用法（飛機 PC，repo 根目錄，dive_sim 環境）：
+    python -m yang2024.xplane.run_yang                       # 切換式 MPC、真值特徵、論文起始位置
+    python -m yang2024.xplane.run_yang --controller lsm
+    python -m yang2024.xplane.run_yang --start far           # 從吉普車後方 900 m 起始
+    python -m yang2024.xplane.run_yang --measure yolo --yolo-model <best.pt 路徑>
+    python -m yang2024.xplane.run_yang --dry-run --time 30   # 不開 X-Plane，用假的 X-Plane 測試程式
+"""
+import argparse
+import math
+from collections import deque
+from pathlib import Path
+
+import numpy as np
+
+from .. import geometry as geo
+from ..baselines import lsm_u_psi
+from ..mpc import Switcher, YangMPC
+from .autopilot import BankToTurnAutopilot
+from .camera import XPCamera
+from .common import Recorder, output_dir, save_json, setup, wait_for_jeep
+from .xp_link import import_senior, place_relative_to_jeep
+
+
+class PoseHistory:
+    """YOLO 結果有延遲：用影像擷取當下的姿態、雲台角度做 Ideal State 轉換（避免把自身運動誤當成目標運動）。"""
+
+    def __init__(self, maxlen=200):
+        self.buf = deque(maxlen=maxlen)
+
+    def add(self, t, pan, tilt, pitch, roll):
+        self.buf.append((t, pan, tilt, pitch, roll))
+
+    def at(self, t):
+        if not self.buf:
+            return None
+        return min(self.buf, key=lambda r: abs(r[0] - t))
+
+
+def start_yolo(model_path, cam):
+    vd = import_senior("vision_driver")
+    detector = vd.CarDetector(model_path, use_tracker=False)
+    shared = vd.SharedVisionState(cam.width, cam.height)
+    thread = vd.VisionThread(detector, shared, cam.width, cam.height)
+    thread.start()
+    return detector, shared, thread
+
+
+def summarize(rec, params, k, dt_mpc):
+    t = rec.column("t")
+    mpc = rec.column("mpc_tick") > 0
+    R = rec.column("R_truth")
+    dts = np.diff(t, prepend=t[0])
+    out = R > params["R_M"]
+    inside = np.where(~out & np.isfinite(R))[0]
+    s2 = np.hypot(rec.column("u2"), rec.column("v2"))[mpc]
+    u = rec.column("u_cmd")[mpc]
+    solve = rec.column("solve_ms")[mpc]
+    return {
+        "duration_s": float(t[-1] - t[0]) if len(t) else 0.0,
+        "loop_hz": float(len(t) / max(t[-1] - t[0], 1e-6)) if len(t) > 1 else 0.0,
+        "mpc_hz": float(mpc.sum() / max(t[-1] - t[0], 1e-6)) if len(t) > 1 else 0.0,
+        "rmse_s2_px": float(np.sqrt(np.nanmean(s2**2))),
+        "rmse_s2_norm_x537": float(np.sqrt(np.nanmean(s2**2)) * 537.0 / params["f"]),
+        "R_max_m": float(np.nanmax(R)) if np.isfinite(R).any() else None,
+        "R_RM_ratio_max": float(np.nanmax(R) / params["R_M"]) if np.isfinite(R).any() else None,
+        "time_outside_RM_s": float(np.sum(dts[out])),
+        "t_enter_RM_s": float(t[inside[0]] - t[0]) if inside.size else None,
+        "u_sat_ratio": float(np.mean(np.abs(u) >= 0.999 * params["u_max"])),
+        "solve_ms_mean": float(np.nanmean(solve)) if np.isfinite(solve).any() else None,
+        "solve_ms_max": float(np.nanmax(solve)) if np.isfinite(solve).any() else None,
+        "psi_rate_tracking_rms": float(np.sqrt(np.nanmean((rec.column("psi_rate") - rec.column("u_cmd"))**2))),
+        "agl_rms_err_m": float(np.sqrt(np.nanmean((rec.column("agl") - params["H"])**2))),
+        "agl_max_err_m": float(np.nanmax(np.abs(rec.column("agl") - params["H"]))),
+        "airspeed_rms_err": float(np.sqrt(np.nanmean((rec.column("airspeed") - params["V_t"])**2))),
+        "roll_max_deg": float(np.nanmax(np.abs(rec.column("roll")))),
+        "yolo_detect_ratio": float(np.nanmean(rec.column("detected")[mpc])),
+        "scale": k,
+    }
+
+
+def plot(rec, params, path, title):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    t = rec.column("t")
+    t = t - t[0]
+    fig, ax = plt.subplots(2, 3, figsize=(16, 8))
+    a = ax[0, 0]
+    a.plot(rec.column("x"), rec.column("y"), label="UAV")
+    a.plot(rec.column("jx"), rec.column("jy"), "k", lw=2, label="jeep")
+    a.set_aspect("equal", adjustable="datalim")
+    a.set(title="trajectory", xlabel="x east (m)", ylabel="y north (m)")
+    a = ax[0, 1]
+    a.plot(t, rec.column("R_truth"), label="R (jeep truth)")
+    a.axhline(params["R_M"], color="k", ls="--")
+    a.set(title="horizontal distance R (m)", xlabel="t (s)")
+    a = ax[0, 2]
+    a.plot(t, rec.column("u_cmd"), label="u_psi command")
+    a.plot(t, rec.column("psi_rate"), label="actual heading rate")
+    a.axhline(params["u_max"], color="k", ls="--", lw=1)
+    a.axhline(-params["u_max"], color="k", ls="--", lw=1)
+    a.set(title="u_psi (rad/s)", xlabel="t (s)")
+    a = ax[1, 0]
+    a.plot(t, rec.column("phi_cmd"), label="roll command")
+    a.plot(t, rec.column("roll"), label="roll")
+    a.set(title="roll (deg)", xlabel="t (s)")
+    a = ax[1, 1]
+    a.plot(t, rec.column("agl") - params["H"], label="AGL − H (m)")
+    a.plot(t, rec.column("airspeed") - params["V_t"], label="airspeed − V (m/s)")
+    a.set(title="altitude / airspeed error", xlabel="t (s)")
+    a = ax[1, 2]
+    a.plot(t, rec.column("u2"), label="u2")
+    a.plot(t, rec.column("v2"), label="v2")
+    a.plot(t, rec.column("u1"), label="u1", alpha=0.6)
+    a.plot(t, rec.column("v1"), label="v1", alpha=0.6)
+    a.set(title="image features (px)", xlabel="t (s)")
+    for a in ax.ravel():
+        a.grid(alpha=0.3)
+        a.legend(fontsize=8)
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(path, dpi=110)
+    plt.close(fig)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--controller", choices=("switch", "p1soft", "lsm"), default="switch")
+    ap.add_argument("--measure", choices=("truth", "yolo"), default="truth")
+    ap.add_argument("--yolo-model", default=None)
+    ap.add_argument("--start", choices=("paper", "far"), default=None, help="覆寫 xp_params.yaml 的 scenario.start")
+    ap.add_argument("--time", type=float, default=None, help="模擬秒數（預設 xp_params.yaml 的 max_time_s）")
+    ap.add_argument("--no-reset", action="store_true", help="不重新擺放飛機，從目前位置開始")
+    ap.add_argument("--dry-run", action="store_true", help="用假的 X-Plane（不需要 X-Plane）")
+    ap.add_argument("--out", default=None, help="輸出資料夾（預設 results/xplane/<時間>_yang_...）")
+    args = ap.parse_args(argv)
+
+    link, clock, params, xp, k = setup(dry_run=args.dry_run)
+    if args.start:
+        xp["scenario"]["start"] = args.start
+    T = args.time if args.time is not None else xp["loop"]["max_time_s"]
+    if args.measure == "yolo" and not args.yolo_model:
+        raise SystemExit("--measure yolo 需要 --yolo-model（例如 yolo_model/yolo_jeep12/weights/best.pt）")
+
+    f, H, V = params["f"], params["H"], params["V_t"]
+    alpha = geo.alpha_from(H, params["R_d"])
+    dt_mpc = params["dt"]
+    cam = XPCamera(xp["camera"])
+    autopilot = BankToTurnAutopilot(xp["autopilot"], V_cmd=V, H_cmd=H)
+    mpc = YangMPC(params) if args.controller != "lsm" else None
+    lam_u, lam_v = params["gimbal_lambda"]
+    tilt_min, tilt_max = params["gimbal_tilt_range"]
+    rate_max = params["gimbal_rate_max"]
+
+    print(f"[Yang X-Plane] V = {V} m/s、H = {H} m、R_d = {params['R_d']:.0f} m、R_M = {params['R_M']:.0f} m、"
+          f"u_max = {params['u_max']:.4f} rad/s、Δt = {dt_mpc:.3f} s、f = {f:.1f} px")
+    print(f"[Yang X-Plane] 吉普車速度應為 {xp['scenario']['jeep_speed_paper']} × {k['k_V']:.3f} = "
+          f"{xp['scenario']['jeep_speed_paper'] * k['k_V']:.1f} m/s（jeep_controller.py --speed）")
+
+    st = wait_for_jeep(link, clock)
+    if not args.no_reset:
+        place_relative_to_jeep(link, st, xp, k, H)
+        clock.sleep(2.0)
+        st = link.read()
+    pan, tilt = geo.pointing_angles(st.jeep_pos, st.pos, st.psi,
+                                    math.radians(st.pitch_deg), math.radians(st.roll_deg))
+    tilt = float(np.clip(tilt, tilt_min, tilt_max))
+    link.gimbal(pan, tilt)
+
+    vision = start_yolo(args.yolo_model, cam) if args.measure == "yolo" else None
+    poses = PoseHistory()
+    rec = Recorder()
+    if args.out:
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+    else:
+        out = output_dir(xp, f"yang_{args.controller}_{args.measure}_{xp['scenario']['start']}")
+    print(f"[Yang X-Plane] 紀錄存到 {out}")
+
+    u_cmd, u_prev, U, switcher = params["u_psi_init"], params["u_psi_init"], None, None
+    s1, s2_last = (0.0, 0.0), (0.0, 0.0)
+    rates = (0.0, 0.0)
+    mode, n1, solve_ms, detected = "-", -1, np.nan, 0.0
+    u2 = v2 = u3 = v3 = g1 = np.nan
+    t0 = clock.now()
+    next_mpc = t0
+    last_tick = t0
+    tick = 1.0 / xp["loop"]["control_hz"]
+    min_agl = xp["loop"]["min_agl_ratio"] * H
+    link.pause(False)
+    link.message("Yang 2024 tracking: running")
+    try:
+        while True:
+            now = clock.now()
+            if now - t0 >= T:
+                break
+            dt = now - last_tick
+            last_tick = now
+            st = link.read()
+            if st.agl < min_agl:
+                print(f"[Yang X-Plane] 離地 {st.agl:.0f} m < {min_agl:.0f} m，暫停並結束")
+                break
+            pitch, roll = math.radians(st.pitch_deg), math.radians(st.roll_deg)
+            poses.add(now, pan, tilt, pitch, roll)
+            ut1, vt1, depth = cam.project_truth(st, pan, tilt) if st.jeep_ok else (np.nan, np.nan, -1)
+
+            mpc_tick = now >= next_mpc
+            if mpc_tick:
+                next_mpc = max(next_mpc + dt_mpc, now + 0.5 * dt_mpc)
+                pose = (pan, tilt, pitch, roll)
+                if args.measure == "truth":
+                    if depth > 0:
+                        s1 = (ut1, vt1)
+                    detected = float(depth > 0)
+                else:
+                    detector, shared, _ = vision
+                    detector.update_altitude(st.agl)
+                    res, _ = shared.get_latest()
+                    detected = float(bool(res.detected))
+                    if res.detected:
+                        s1 = cam.to_centered(res.raw_center_x, res.raw_center_y)
+                        hist = poses.at(res.timestamp)
+                        if hist is not None:
+                            pose = hist[1:]
+                u2, v2, u3, v3, ok = geo.ideal_and_down(s1[0], s1[1], *pose[:2], alpha, f,
+                                                        pitch=pose[2], roll=pose[3])
+                if ok:
+                    s2_last = (u2, v2)
+                u2, v2 = s2_last
+                g1 = geo.perception_g(u3, v3, f, params["R_M"], H)
+
+                if args.controller == "lsm":
+                    u_cmd = lsm_u_psi(u2, v2, V, alpha, f, params)
+                    mode = "LSM"
+                else:
+                    if args.controller == "p1soft":
+                        mode = "J1"
+                    else:
+                        if switcher is None:
+                            switcher = Switcher(params, g1)
+                        else:
+                            switcher.update(g1)
+                        mode, n1 = switcher.mode, switcher.n1
+                    U0 = mpc.lsm_warm_start(u2, v2, u_prev) if U is None else YangMPC.shift(U)
+                    U, info = mpc.solve(mode, u2, v2, u_prev, U0)
+                    u_cmd, solve_ms = float(U[0]), info["time"] * 1e3
+                u_prev = u_cmd
+                # Eq. 9：每個 MPC 週期把目標拉回中心的角度，換成角速度
+                rates = (float(np.clip(math.atan(-lam_u * s1[0] / f) / dt_mpc, -rate_max, rate_max)),
+                         float(np.clip(math.atan(-lam_v * s1[1] / f) / dt_mpc, -rate_max, rate_max)))
+
+            # 雲台：依真實經過時間積分
+            pan = math.atan2(math.sin(pan + rates[0] * dt), math.cos(pan + rates[0] * dt))
+            tilt = float(np.clip(tilt + rates[1] * dt, tilt_min, tilt_max))
+            link.gimbal(pan, tilt)
+
+            elev, ail, rud, thr = autopilot.update(st, u_cmd, dt)
+            link.controls(elev, ail, rud, thr)
+
+            rec.add(t=now, mpc_tick=int(mpc_tick), x=st.x, y=st.y, agl=st.agl, psi=st.psi,
+                    heading=st.heading_deg, psi_rate=st.psi_rate, roll=st.roll_deg, pitch=st.pitch_deg,
+                    airspeed=st.airspeed, jx=st.jx, jy=st.jy, jeep_ok=int(st.jeep_ok),
+                    R_truth=math.hypot(st.jx - st.x, st.jy - st.y) if st.jeep_ok else np.nan,
+                    u_cmd=u_cmd, phi_cmd=autopilot.last["phi_cmd"], theta_cmd=autopilot.last["theta_cmd"],
+                    elevator=elev, aileron=ail, rudder=rud, throttle=thr,
+                    mode=mode, n1=n1, solve_ms=solve_ms, detected=detected,
+                    u1=s1[0], v1=s1[1], u1_truth=ut1, v1_truth=vt1, u2=u2, v2=v2, u3=u3, v3=v3, g1=g1,
+                    pan=pan, tilt=tilt, pan_rate=rates[0], tilt_rate=rates[1])
+            clock.sleep(tick - (clock.now() - now))
+    except KeyboardInterrupt:
+        print("\n[Yang X-Plane] 使用者中斷")
+    finally:
+        link.pause(True)
+        if vision is not None:
+            vision[2].stop()
+        rec.save_csv(out / "log.csv")
+        if rec.rows:
+            summary = summarize(rec, params, k, dt_mpc)
+            summary.update(controller=args.controller, measure=args.measure, start=xp["scenario"]["start"])
+            save_json(out / "summary.json", {"summary": summary, "params": params, "xp": xp})
+            plot(rec, params, out / "overview.png",
+                 f"Yang 2024 in X-Plane: {args.controller}, {args.measure}, start = {xp['scenario']['start']}")
+            for key in ("duration_s", "loop_hz", "mpc_hz", "rmse_s2_norm_x537", "R_max_m", "time_outside_RM_s",
+                        "u_sat_ratio", "psi_rate_tracking_rms", "agl_max_err_m", "roll_max_deg"):
+                print(f"  {key:24s} {summary[key]}")
+        print(f"[Yang X-Plane] 結束，結果在 {out}")
+    return out
+
+
+if __name__ == "__main__":
+    main()
