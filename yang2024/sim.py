@@ -6,6 +6,10 @@
   3. 控制器算 u_psi：LSM / P1,soft / 切換式 MPC
   4. 雲台律（Eq. 9）更新 pan / tilt
   5. 飛機（Eq. 1）與目標前進一步
+
+可選的「真實世界」效果（params.yaml，預設關閉 = 論文的數值模擬條件）：
+  yaw_tau        > 0：實際偏航率以一階延遲追隨 u_psi 命令（論文假設 u_psi 立即生效）
+  bank_in_camera true：協調轉彎的滾轉角 φ = atan(V·ψ̇/g) 會帶動相機（量測端轉 Ideal State 時已知 φ）
 """
 import numpy as np
 
@@ -18,7 +22,8 @@ CONTROLLERS = ("lsm", "p1soft", "switch")
 
 LOG_KEYS = ("t", "x", "y", "psi", "tx", "ty", "u_psi", "mode", "n1",
             "u1", "v1", "u2", "v2", "u3", "v3", "g1", "R", "pan", "tilt",
-            "solve_time", "solve_ok", "visible", "in_fov", "ideal_valid", "target_speed")
+            "solve_time", "solve_ok", "visible", "in_fov", "ideal_valid", "target_speed",
+            "psi_rate", "roll", "depth1", "pan_rate", "tilt_rate", "tvx", "tvy")
 
 
 def simulate(params, controller="switch", Vc=7.0, T=150.0, target_profile=None,
@@ -52,18 +57,25 @@ def simulate(params, controller="switch", Vc=7.0, T=150.0, target_profile=None,
     last_s1 = (0.0, 0.0)
     last_s2 = (0.0, 0.0)
     steps = int(round(T / dt))
+    tau = p.get("yaw_tau", 0.0)
+    bank = p.get("bank_in_camera", False)
+    g_acc = p.get("gravity", 9.81)
+    psi_rate = p["u_psi_init"]  # 實際偏航率
 
     for k in range(steps):
         t = k * dt
         uav_pos = np.array([x, y, H])
-        u1, v1, depth = geo.project(target.position, uav_pos, psi, gimbal.pan, gimbal.tilt, f)
+        # 右轉（ψ̇ < 0）時右翼下沉，roll 為正
+        roll = float(-np.arctan(V * psi_rate / g_acc)) if bank else 0.0
+        u1, v1, depth = geo.project(target.position, uav_pos, psi, gimbal.pan, gimbal.tilt, f, roll=roll)
         visible = depth > 0
         if not visible:  # 目標在相機後方：沿用上一次的量測
             u1, v1 = last_s1
         last_s1 = (u1, v1)
         in_fov = visible and abs(u1) <= W / 2 and abs(v1) <= Himg / 2
 
-        u2, v2, u3, v3, ideal_valid = geo.ideal_and_down(u1, v1, gimbal.pan, gimbal.tilt, alpha, f)
+        u2, v2, u3, v3, ideal_valid = geo.ideal_and_down(u1, v1, gimbal.pan, gimbal.tilt, alpha, f,
+                                                         roll=roll)
         if ideal_valid:
             last_s2 = (u2, v2)
         else:  # 目標在 Ideal 相機後方（論文未定義）：控制器沿用上一次有效的 s2
@@ -88,17 +100,27 @@ def simulate(params, controller="switch", Vc=7.0, T=150.0, target_profile=None,
             if verbose and not ok:
                 print(f"[t={t:6.2f}] {mode} 求解失敗：{info['status']}")
 
+        # 這一步實際的偏航率（τ = 0 時就是命令）
+        if tau > 0:
+            psi_rate += (1.0 - np.exp(-dt / tau)) * (u_psi - psi_rate)
+        else:
+            psi_rate = u_psi
+        pan_rate, tilt_rate = gimbal.rates(u1, v1)
+        t_speed, _ = target.command(t)
+
         rec = dict(t=t, x=x, y=y, psi=psi, tx=target.x, ty=target.y, u_psi=u_psi,
                    mode=mode, n1=n1, u1=u1, v1=v1, u2=u2, v2=v2, u3=u3, v3=v3, g1=g1,
                    R=float(np.hypot(target.x - x, target.y - y)),
                    pan=gimbal.pan, tilt=gimbal.tilt, solve_time=solve_time,
                    solve_ok=ok, visible=visible, in_fov=in_fov, ideal_valid=ideal_valid,
-                   target_speed=target.command(t)[0])
+                   target_speed=t_speed, psi_rate=psi_rate, roll=roll, depth1=depth,
+                   pan_rate=pan_rate, tilt_rate=tilt_rate,
+                   tvx=t_speed * np.cos(target.heading), tvy=t_speed * np.sin(target.heading))
         for key in LOG_KEYS:
             log[key].append(rec[key])
 
-        gimbal.step(*gimbal.rates(u1, v1))
-        x, y, psi = unicycle_step(x, y, psi, V, u_psi, dt)
+        gimbal.step(pan_rate, tilt_rate)
+        x, y, psi = unicycle_step(x, y, psi, V, psi_rate, dt)
         target.step(t, dt)
         u_prev = u_psi
 
