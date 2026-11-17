@@ -16,9 +16,11 @@ def add_profile_arg(ap):
                     help="scaled = 尺度版 V 30 m/s、H 300 m（預設）；original = 論文原值 V 16 m/s、H 100 m")
 
 
-def setup(dry_run=False, jeep_speed=None, profile="scaled", **scale_overrides):
-    """回傳 (link, clock, params, xp, k)。dry_run 用假的 X-Plane。"""
+def setup(dry_run=False, jeep_speed=None, profile="scaled", vc=None, **scale_overrides):
+    """回傳 (link, clock, params, xp, k)。dry_run 用假的 X-Plane。vc：論文尺度的目標速度（覆寫 jeep_speed_paper）。"""
     params, xp, k = build(profile=profile, **scale_overrides)
+    if vc is not None:
+        xp["scenario"]["jeep_speed_paper"] = float(vc)
     print(f"[版本] {profile}：V = {params['V_t']:g} m/s、H = {params['H']:g} m、"
           f"R_M = {params['R_M']:g} m、u_max = {params['u_max']:.4f} rad/s、"
           f"吉普車應為 {jeep_speed_target(xp, k):.1f} m/s")

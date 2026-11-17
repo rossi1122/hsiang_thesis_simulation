@@ -146,10 +146,12 @@ def main(argv=None):
     ap.add_argument("--no-reset", action="store_true", help="不重新擺放飛機，從目前位置開始")
     ap.add_argument("--dry-run", action="store_true", help="用假的 X-Plane（不需要 X-Plane）")
     ap.add_argument("--out", default=None, help="輸出資料夾（預設 results/xplane/<時間>_yang_...）")
+    ap.add_argument("--vc", type=float, default=None,
+                    help="論文尺度的目標速度 V_c（論文用 5、7、9；預設 7）。吉普車實際速度 = V_c × k_V，例如 9 → 16.9 m/s")
     add_profile_arg(ap)
     args = ap.parse_args(argv)
 
-    link, clock, params, xp, k = setup(dry_run=args.dry_run, profile=args.profile)
+    link, clock, params, xp, k = setup(dry_run=args.dry_run, profile=args.profile, vc=args.vc)
     if args.start:
         xp["scenario"]["start"] = args.start
     T = args.time if args.time is not None else xp["loop"]["max_time_s"]
@@ -173,6 +175,7 @@ def main(argv=None):
           f"{v_jeep:.1f} m/s（jeep_controller.py --speed）")
 
     st = wait_for_jeep(link, clock)
+    v_meas = float("nan")
     if not args.no_reset:
         # 先量吉普車速度，擺放時預先補上「暫停等待 2 s」期間吉普車會開走的距離
         clock.sleep(0.5)
@@ -200,7 +203,8 @@ def main(argv=None):
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
     else:
-        out = output_dir(xp, f"yang_{args.controller}_{args.measure}_{xp['scenario']['start']}")
+        out = output_dir(xp, f"yang_{args.controller}_{args.measure}_{xp['scenario']['start']}"
+                             f"_vc{xp['scenario']['jeep_speed_paper']:g}")
     print(f"[Yang X-Plane] 紀錄存到 {out}")
 
     u_cmd, u_prev, U, switcher = params["u_psi_init"], params["u_psi_init"], None, None
@@ -309,7 +313,8 @@ def main(argv=None):
         if rec.rows:
             summary = summarize(rec, params, k, dt_mpc)
             summary.update(profile=xp["profile"], controller=args.controller, measure=args.measure,
-                           start=xp["scenario"]["start"])
+                           start=xp["scenario"]["start"], vc_paper=xp["scenario"]["jeep_speed_paper"],
+                           jeep_speed_target=v_jeep, jeep_speed_measured=v_meas)
             save_json(out / "summary.json", {"summary": summary, "params": params, "xp": xp})
             plot(rec, params, out / "overview.png",
                  f"Yang 2024 in X-Plane: {args.controller}, {args.measure}, start = {xp['scenario']['start']}")
