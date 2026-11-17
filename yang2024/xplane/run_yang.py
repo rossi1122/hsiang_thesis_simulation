@@ -87,7 +87,29 @@ def summarize(rec, params, k, dt_mpc):
         "airspeed_rms_err": float(np.sqrt(np.nanmean((rec.column("airspeed") - params["V_t"])**2))),
         "roll_max_deg": float(np.nanmax(np.abs(rec.column("roll")))),
         "yolo_detect_ratio": float(np.nanmean(rec.column("detected")[mpc])),
+        **yolo_stats(rec, mpc),
         "scale": k,
+    }
+
+
+def yolo_stats(rec, mpc):
+    """YOLO 模式：偵測結果的延遲、更新頻率、和真值投影的像素誤差（truth 模式全部是 None）。"""
+    ts = rec.column("yolo_ts")[mpc]
+    t = rec.column("t")[mpc]
+    ok = np.isfinite(ts)
+    if not ok.any():
+        return {"yolo_age_ms_mean": None, "yolo_hz": None, "yolo_err_px_rms": None, "yolo_err_px_max": None}
+    age = (t[ok] - ts[ok]) * 1e3
+    uniq = np.unique(ts[ok])
+    det = (rec.column("detected")[mpc] > 0) & ok
+    err = np.hypot(rec.column("u1")[mpc] - rec.column("u1_truth")[mpc],
+                   rec.column("v1")[mpc] - rec.column("v1_truth")[mpc])[det]
+    err = err[np.isfinite(err)]
+    return {
+        "yolo_age_ms_mean": float(np.mean(age)),
+        "yolo_hz": float((len(uniq) - 1) / max(uniq[-1] - uniq[0], 1e-6)) if len(uniq) > 1 else None,
+        "yolo_err_px_rms": float(np.sqrt(np.mean(err**2))) if err.size else None,   # 量測（控制當下）和真值投影的差
+        "yolo_err_px_max": float(np.max(err)) if err.size else None,
     }
 
 
@@ -236,6 +258,7 @@ def main(argv=None):
     s1, s2_last = (0.0, 0.0), (0.0, 0.0)
     rates = (0.0, 0.0)
     mode, n1, solve_ms, detected = "-", -1, np.nan, 0.0
+    yolo_ts = float("nan")
     u2 = v2 = u3 = v3 = g1 = np.nan
     t0 = clock.now()
     next_mpc = t0
@@ -271,11 +294,13 @@ def main(argv=None):
                     if depth > 0:
                         s1 = (ut1, vt1)
                     detected = float(depth > 0)
+                    yolo_ts = float("nan")
                 else:
                     detector, shared, _ = vision
                     detector.update_altitude(st.agl)
                     res, _ = shared.get_latest()
                     detected = float(bool(res.detected))
+                    yolo_ts = float(res.timestamp) if res.timestamp else float("nan")
                     if res.detected:
                         s1 = cam.to_centered(res.raw_center_x, res.raw_center_y)
                         hist = poses.at(res.timestamp)
@@ -324,7 +349,7 @@ def main(argv=None):
                     R_truth=math.hypot(st.jx - st.x, st.jy - st.y) if st.jeep_ok else np.nan,
                     u_cmd=u_cmd, phi_cmd=autopilot.last["phi_cmd"], theta_cmd=autopilot.last["theta_cmd"],
                     elevator=elev, aileron=ail, rudder=rud, throttle=thr,
-                    mode=mode, n1=n1, solve_ms=solve_ms, detected=detected,
+                    mode=mode, n1=n1, solve_ms=solve_ms, detected=detected, yolo_ts=yolo_ts,
                     u1=s1[0], v1=s1[1], u1_truth=ut1, v1_truth=vt1, u2=u2, v2=v2, u3=u3, v3=v3, g1=g1,
                     pan=pan, tilt=tilt, pan_rate=rates[0], tilt_rate=rates[1])
             clock.sleep(tick - (clock.now() - now))

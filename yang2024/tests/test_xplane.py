@@ -158,3 +158,18 @@ def test_run_yang_original_dry_run(tmp_path):
     import json
     s = json.loads((out / "summary.json").read_text(encoding="utf-8"))["summary"]
     assert s["profile"] == "original" and np.isclose(s["scale"]["k_L"], 1)
+
+
+def test_yolo_stats():
+    """YOLO 統計：延遲、更新頻率、和真值的像素誤差。"""
+    from yang2024.xplane.common import Recorder
+    from yang2024.xplane.run_yang import yolo_stats
+    rec = Recorder()
+    for i in range(100):
+        t = i * 0.08
+        ts = (i // 2) * 0.16 - 0.05          # 每 0.16 s 一張、拍攝在 0.05 s 前
+        rec.add(t=t, mpc_tick=1, yolo_ts=ts, detected=1.0, u1=3.0, v1=4.0, u1_truth=0.0, v1_truth=0.0)
+    s = yolo_stats(rec, np.ones(100, bool))
+    assert abs(s["yolo_hz"] - 1 / 0.16) < 0.1
+    assert 50 <= s["yolo_age_ms_mean"] <= 130
+    assert np.isclose(s["yolo_err_px_rms"], 5.0)
