@@ -227,9 +227,9 @@ def main(argv=None):
     ap.add_argument("--show", action="store_true",
                     help="開即時顯示視窗（模式、R、YOLO 框、真值十字）。視窗要放在另一個螢幕，見 --show-x")
     ap.add_argument("--record", action="store_true", help="把顯示畫面錄成結果資料夾裡的 overlay.mp4")
-    ap.add_argument("--show-x", type=int, default=1920,
-                    help="顯示視窗左上角 x（預設 1920 = 主螢幕右邊的第二個螢幕；第二螢幕在左邊就用 -1280）")
-    ap.add_argument("--show-y", type=int, default=0)
+    ap.add_argument("--show-x", type=int, default=None,
+                    help="顯示視窗左上角 x（預設自動：放在 X-Plane 以外的另一個螢幕）")
+    ap.add_argument("--show-y", type=int, default=None)
     ap.add_argument("--vc", type=float, default=None,
                     help="論文尺度的目標速度 V_c（論文用 5、7、9；預設 7）。吉普車實際速度 = V_c × k_V，例如 9 → 16.9 m/s")
     add_profile_arg(ap)
@@ -302,19 +302,38 @@ def main(argv=None):
 
     overlay = status = None
     if (args.show or args.record) and not args.dry_run:
-        from .overlay import OverlayStatus, OverlayThread, screen_grabber
+        from .overlay import OverlayStatus, OverlayThread, pick_window_position, screen_grabber
+        region = {"top": xp["camera"]["crop_top"], "left": 0, "width": cam.width, "height": cam.height}
+        show = args.show
+        wx, wy = args.show_x, args.show_y
+        if show and (wx is None or wy is None):
+            try:
+                pos, desc = pick_window_position(region)
+            except Exception as exc:  # noqa: BLE001
+                pos, desc = None, f"讀不到螢幕資訊：{exc}"
+            print(f"[overlay] 偵測到的螢幕：{desc}")
+            if pos is None:
+                if vision is not None:
+                    print("[overlay] ⚠️ 找不到 X-Plane 以外的螢幕：YOLO 模式下視窗會被截進畫面，所以不開視窗"
+                          "（有 --record 仍會錄影）。可用 --show-x --show-y 自己指定位置。")
+                    show = False
+                pos = (0, 0)
+            wx = pos[0] if wx is None else wx
+            wy = pos[1] if wy is None else wy
         status = OverlayStatus()
         status.update(R_M=params["R_M"])
         if vision is not None:
             source = vision[1].get_debug_frame
         else:
-            source = screen_grabber({"top": xp["camera"]["crop_top"], "left": 0,
-                                     "width": cam.width, "height": cam.height})
-        overlay = OverlayThread(status, source, cam.cx, cam.cy, show=args.show,
+            source = screen_grabber(region)
+        overlay = OverlayThread(status, source, cam.cx, cam.cy, show=show,
                                 record_path=(out / "overlay.mp4") if args.record else None,
-                                window_x=args.show_x, window_y=args.show_y)
+                                window_x=wx or 0, window_y=wy or 0)
         overlay.start()
-        print(f"[overlay] 顯示{'＋錄影' if args.record else ''}已啟動（視窗位置 x = {args.show_x}）")
+        if show:
+            print(f"[overlay] 顯示{'＋錄影' if args.record else ''}已啟動，視窗位置 (x, y) = ({wx}, {wy})")
+        else:
+            print("[overlay] 只錄影（不開視窗）")
 
     u_cmd, u_prev, U, switcher = params["u_psi_init"], params["u_psi_init"], None, None
     s1, s2_last = (0.0, 0.0), (0.0, 0.0)

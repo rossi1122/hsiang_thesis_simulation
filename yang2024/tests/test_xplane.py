@@ -254,3 +254,16 @@ def test_overlay_draw():
                        "u2": -600.0, "v2": 100.0, "u1_truth": 12.0, "v1_truth": -8.0,
                        "bbox": (950, 495, 975, 515), "conf": 0.8}, 960, 505)
     assert img.shape == (672, 1280, 3) and img.any()
+
+
+def test_pick_window_position():
+    from yang2024.xplane.overlay import pick_window_position
+    region = {"top": 30, "left": 0, "width": 1920, "height": 1010}
+    full = {"left": -2560, "top": 0, "width": 4480, "height": 1440}
+    main = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+    left = {"left": -2560, "top": 0, "width": 2560, "height": 1440}
+    pos, _ = pick_window_position(region, [full, main, left])
+    assert pos == (-2540, 40)                      # 第二螢幕在左邊
+    right = {"left": 1920, "top": 200, "width": 1920, "height": 1080}
+    assert pick_window_position(region, [full, main, right])[0] == (1940, 240)
+    assert pick_window_position(region, [main, main])[0] is None   # 只有一個螢幕

@@ -105,6 +105,10 @@ class OverlayThread:
             cv2.namedWindow(name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(name, 1280, 672)
             cv2.moveWindow(name, self.window_x, self.window_y)
+            try:
+                cv2.setWindowProperty(name, cv2.WND_PROP_TOPMOST, 1)   # 保持在最上層
+            except Exception:  # noqa: BLE001 — 舊版 OpenCV 沒有這個屬性
+                pass
         try:
             while self._running:
                 t_start = time.time()
@@ -131,6 +135,30 @@ class OverlayThread:
                     cv2.destroyWindow(name)
                 except Exception:  # noqa: BLE001
                     pass
+
+
+def pick_window_position(capture_region, monitors=None):
+    """選一個「不是 X-Plane 那個螢幕」的螢幕放顯示視窗。回傳 (x, y, 說明文字)；只有一個螢幕時回傳 None。
+
+    monitors：mss 的螢幕清單（第 0 個是全部螢幕合起來，之後每個是一個實體螢幕，座標是實際像素）。
+    """
+    if monitors is None:
+        import mss
+        with (mss.MSS() if hasattr(mss, "MSS") else mss.mss()) as sct:
+            monitors = list(sct.monitors)
+    screens = monitors[1:]
+    cx = capture_region["left"] + capture_region["width"] / 2
+    cy = capture_region["top"] + capture_region["height"] / 2
+
+    def contains(m, x, y):
+        return m["left"] <= x < m["left"] + m["width"] and m["top"] <= y < m["top"] + m["height"]
+    desc = "、".join(f"#{i + 1}(x={m['left']}, y={m['top']}, {m['width']}×{m['height']})"
+                     for i, m in enumerate(screens))
+    others = [m for m in screens if not contains(m, cx, cy)]
+    if not others:
+        return None, desc
+    m = others[0]
+    return (m["left"] + 20, m["top"] + 40), desc
 
 
 def screen_grabber(region):
