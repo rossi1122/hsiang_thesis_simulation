@@ -136,6 +136,21 @@ def plot(rec, params, path, title):
     plt.close(fig)
 
 
+def run_checks(rec, params, v_jeep):
+    """飛行中（沒暫停）的吉普車實際速度、起始水平距離，並在速度不對時提醒。"""
+    t, jx, jy, R = (rec.column(c) for c in ("t", "jx", "jy", "R_truth"))
+    ok = np.isfinite(jx) & np.isfinite(jy)
+    v_run = float("nan")
+    if ok.sum() > 10 and t[ok][-1] - t[ok][0] > 1.0:
+        v_run = float(math.hypot(jx[ok][-1] - jx[ok][0], jy[ok][-1] - jy[ok][0]) / (t[ok][-1] - t[ok][0]))
+        if abs(v_run - v_jeep) > 0.1 * v_jeep:
+            print(f"[檢查] ⚠️ 飛行中吉普車平均 {v_run:.1f} m/s，和應有的 {v_jeep:.1f} m/s 差超過 10%：這次結果不能和論文比")
+    R0 = float(R[np.isfinite(R)][0]) if np.isfinite(R).any() else float("nan")
+    R0_target = float(np.hypot(*params["uav_init"]))
+    print(f"[檢查] 吉普車飛行中平均 {v_run:.2f} m/s（應為 {v_jeep:.2f}）；起始水平距離 {R0:.0f} m（應為 {R0_target:.0f} m）")
+    return {"jeep_speed_run": v_run, "R_start_m": R0, "R_start_target_m": R0_target}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--controller", choices=("switch", "p1soft", "lsm"), default="switch")
@@ -177,16 +192,20 @@ def main(argv=None):
     st = wait_for_jeep(link, clock)
     v_meas = float("nan")
     if not args.no_reset:
-        # 先量吉普車速度，擺放時預先補上「暫停等待 2 s」期間吉普車會開走的距離
-        clock.sleep(0.5)
+        # 擺放時預先補上「暫停等待 settle 秒」期間吉普車會開走的距離。
+        # 2026-11-17 實驗 A：飛機 PC 的 X-Plane 在暫停中（上一次結束時暫停）量到的吉普車速度只有 6.9 m/s，
+        # 但紀錄中吉普車其實一直是 13.2 m/s → 暫停時多人連線位置更新不可靠。
+        # 所以補償改用「這個 V_c 應有的速度 × 吉普車航向」，實測速度只拿來檢查筆電的 --speed 有沒有打錯。
+        clock.sleep(1.0)
         st2 = link.read()
         dtj = max(st2.t - st.t, 1e-3)
-        settle = 2.0
-        shift = ((st2.jx - st.jx) / dtj * (settle + 0.1), (st2.jy - st.jy) / dtj * (settle + 0.1))
         v_meas = math.hypot(st2.jx - st.jx, st2.jy - st.jy) / dtj
-        print(f"[擺放] 吉普車速度約 {v_meas:.1f} m/s")
-        if abs(v_meas - v_jeep) > 0.2 * v_jeep:
-            print(f"[擺放] ⚠️ 吉普車速度和這個版本應有的 {v_jeep:.1f} m/s 差很多：筆電的 jeep_controller.py --speed 要改")
+        settle = 2.0
+        lead = v_jeep * (settle + 0.1)
+        shift = (lead * math.cos(st2.jpsi), lead * math.sin(st2.jpsi))
+        print(f"[擺放] 吉普車速度：應為 {v_jeep:.1f} m/s，暫停中粗測約 {v_meas:.1f} m/s（暫停時不準，只供參考）")
+        if v_meas > 1.5 * v_jeep:
+            print(f"[擺放] ⚠️ 吉普車比 {v_jeep:.1f} m/s 快很多：筆電的 jeep_controller.py --speed 可能打錯")
         place_relative_to_jeep(link, st2, xp, k, H, jeep_shift=shift)
         clock.sleep(settle)
         st = link.read()
@@ -314,7 +333,8 @@ def main(argv=None):
             summary = summarize(rec, params, k, dt_mpc)
             summary.update(profile=xp["profile"], controller=args.controller, measure=args.measure,
                            start=xp["scenario"]["start"], vc_paper=xp["scenario"]["jeep_speed_paper"],
-                           jeep_speed_target=v_jeep, jeep_speed_measured=v_meas)
+                           jeep_speed_target=v_jeep, jeep_speed_paused_probe=v_meas,
+                           **run_checks(rec, params, v_jeep))
             save_json(out / "summary.json", {"summary": summary, "params": params, "xp": xp})
             plot(rec, params, out / "overview.png",
                  f"Yang 2024 in X-Plane: {args.controller}, {args.measure}, start = {xp['scenario']['start']}")
