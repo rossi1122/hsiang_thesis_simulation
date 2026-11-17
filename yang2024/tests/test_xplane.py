@@ -173,3 +173,84 @@ def test_yolo_stats():
     assert abs(s["yolo_hz"] - 1 / 0.16) < 0.1
     assert 50 <= s["yolo_age_ms_mean"] <= 130
     assert np.isclose(s["yolo_err_px_rms"], 5.0)
+
+
+def test_run_yang_yolo_path_with_fake_detector(tmp_path, monkeypatch):
+    """用假的 vision_driver 走一次 YOLO 流程：暖機 → 等第一次偵測 → 閉迴路 → summary 有 YOLO 統計。"""
+    import types
+    from yang2024.xplane import run_yang as ry
+    clock_ref = {}
+
+    class Res:
+        def __init__(self, t):
+            self.timestamp, self.detected, self.confidence = t, True, 0.9
+            self.raw_center_x, self.raw_center_y, self.bbox = 960.0, 505.0, (950, 495, 970, 515)
+
+    class Detector:
+        def __init__(self, *a, **k):
+            self.warm = 0
+
+        def update_altitude(self, a):
+            pass
+
+        def detect_vehicle(self, frame):
+            self.warm += 1
+            return True, 960.0, 505.0, (950, 495, 970, 515), 0.9
+
+    class Shared:
+        def __init__(self, *a):
+            self.n = 0
+            self.vision_fps = 20.0
+
+        def get_latest(self):
+            self.n += 1
+            return Res(clock_ref["now"]() - 0.04), True
+
+        @property
+        def frame_count(self):
+            return self.n
+
+        def get_debug_frame(self):
+            return None
+
+    class Thread:
+        def __init__(self, *a):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    fake_vd = types.SimpleNamespace(CarDetector=Detector, SharedVisionState=Shared, VisionThread=Thread)
+    monkeypatch.setattr(ry, "import_senior", lambda name: fake_vd)
+    orig_setup = ry.setup
+
+    def setup_spy(*a, **k):
+        out = orig_setup(*a, **k)
+        clock_ref["now"] = out[1].now
+        return out
+    monkeypatch.setattr(ry, "setup", setup_spy)
+    out = ry.main(["--dry-run", "--measure", "yolo", "--yolo-model", "x.pt", "--time", "10", "--out", str(tmp_path)])
+    import json
+    s = json.loads((out / "summary.json").read_text(encoding="utf-8"))["summary"]
+    assert s["yolo_detect_ratio"] == 1.0 and s["yolo_fps"] is not None
+    assert 30 <= s["yolo_age_ms_mean"] <= 60
+
+
+def test_pose_history_rejects_stale():
+    from yang2024.xplane.run_yang import PoseHistory
+    p = PoseHistory()
+    p.add(10.0, 0.1, -0.5, 0.0, 0.0)
+    assert p.at(10.1) is not None and p.at(5.0) is None
+
+
+def test_overlay_draw():
+    cv2 = pytest.importorskip("cv2")
+    from yang2024.xplane.overlay import draw
+    frame = np.zeros((1010, 1920, 3), np.uint8)
+    img = draw(frame, {"mode": "Jg", "n1": 0, "R": 320.0, "R_M": 300.0, "u_cmd": -0.31, "roll": 44.0,
+                       "u2": -600.0, "v2": 100.0, "u1_truth": 12.0, "v1_truth": -8.0,
+                       "bbox": (950, 495, 975, 515), "conf": 0.8}, 960, 505)
+    assert img.shape == (672, 1280, 3) and img.any()

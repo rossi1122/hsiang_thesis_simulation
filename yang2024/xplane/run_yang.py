@@ -52,19 +52,44 @@ class PoseHistory:
     def add(self, t, pan, tilt, pitch, roll):
         self.buf.append((t, pan, tilt, pitch, roll))
 
-    def at(self, t):
+    def at(self, t, max_gap=0.3):
         if not self.buf:
             return None
-        return min(self.buf, key=lambda r: abs(r[0] - t))
+        best = min(self.buf, key=lambda r: abs(r[0] - t))
+        return best if abs(best[0] - t) <= max_gap else None   # 例如暫停中拍的影像：沒有對應的姿態
 
 
-def start_yolo(model_path, cam):
+def start_yolo(model_path, cam, altitude):
+    """載入 YOLO、先空跑一次（GPU 第一次推論要 1–3 s），再啟動截圖執行緒。
+
+    2026-11-17 YOLO 版實驗 A：原本在飛機解除暫停前一刻才啟動，暖機期間飛機已在轉彎，
+    目標漂出畫面，前 7.4 s 都偵測不到。現在在擺放飛機之前就啟動並暖機。
+    """
+    import time as _time
     vd = import_senior("vision_driver")
     detector = vd.CarDetector(model_path, use_tracker=False)
+    detector.update_altitude(altitude)
+    t = _time.time()
+    detector.detect_vehicle(np.zeros((cam.height, cam.width, 3), np.uint8))
+    print(f"[YOLO] 暖機完成（第一次推論 {(_time.time() - t) * 1e3:.0f} ms）")
     shared = vd.SharedVisionState(cam.width, cam.height)
     thread = vd.VisionThread(detector, shared, cam.width, cam.height)
     thread.start()
     return detector, shared, thread
+
+
+def wait_first_detection(vision, clock, since, timeout=8.0):
+    """擺好飛機、雲台對準後（模擬暫停中），等 YOLO 用之後拍的畫面偵測到目標。"""
+    _, shared, _ = vision
+    t0 = clock.now()
+    while clock.now() - t0 < timeout:
+        res, _ = shared.get_latest()
+        if res.detected and res.timestamp > since:
+            print(f"[YOLO] 已偵測到吉普車（信心 {res.confidence:.2f}），開始")
+            return True
+        clock.sleep(0.05)
+    print("[YOLO] ⚠️ 8 秒內沒有偵測到吉普車：確認 X-Plane 在主螢幕、3D 座艙視角、沒有被視窗擋住。仍然開始。")
+    return False
 
 
 def summarize(rec, params, k, dt_mpc):
@@ -199,6 +224,12 @@ def main(argv=None):
     ap.add_argument("--no-reset", action="store_true", help="不重新擺放飛機，從目前位置開始")
     ap.add_argument("--dry-run", action="store_true", help="用假的 X-Plane（不需要 X-Plane）")
     ap.add_argument("--out", default=None, help="輸出資料夾（預設 results/xplane/<時間>_yang_...）")
+    ap.add_argument("--show", action="store_true",
+                    help="開即時顯示視窗（模式、R、YOLO 框、真值十字）。視窗要放在另一個螢幕，見 --show-x")
+    ap.add_argument("--record", action="store_true", help="把顯示畫面錄成結果資料夾裡的 overlay.mp4")
+    ap.add_argument("--show-x", type=int, default=1920,
+                    help="顯示視窗左上角 x（預設 1920 = 主螢幕右邊的第二個螢幕；第二螢幕在左邊就用 -1280）")
+    ap.add_argument("--show-y", type=int, default=0)
     ap.add_argument("--vc", type=float, default=None,
                     help="論文尺度的目標速度 V_c（論文用 5、7、9；預設 7）。吉普車實際速度 = V_c × k_V，例如 9 → 16.9 m/s")
     add_profile_arg(ap)
@@ -227,6 +258,9 @@ def main(argv=None):
     print(f"[Yang X-Plane] 吉普車速度應為 {xp['scenario']['jeep_speed_paper']} × {k['k_V']:.3f} = "
           f"{v_jeep:.1f} m/s（jeep_controller.py --speed）")
 
+    vision = None
+    if args.measure == "yolo":
+        vision = start_yolo(args.yolo_model, cam, H)
     st = wait_for_jeep(link, clock)
     v_meas = float("nan")
     if not args.no_reset:
@@ -252,8 +286,10 @@ def main(argv=None):
                                     math.radians(st.pitch_deg), math.radians(st.roll_deg))
     tilt = float(np.clip(tilt, tilt_min, tilt_max))
     link.gimbal(pan, tilt)
-
-    vision = start_yolo(args.yolo_model, cam) if args.measure == "yolo" else None
+    if vision is not None:
+        clock.sleep(0.2)                     # 讓 X-Plane 先畫出雲台轉好的畫面
+        wait_first_detection(vision, clock, since=clock.now())
+        frames0 = vision[1].frame_count
     poses = PoseHistory()
     rec = Recorder()
     if args.out:
@@ -263,6 +299,22 @@ def main(argv=None):
         out = output_dir(xp, f"yang_{args.controller}_{args.measure}_{xp['scenario']['start']}"
                              f"_vc{xp['scenario']['jeep_speed_paper']:g}")
     print(f"[Yang X-Plane] 紀錄存到 {out}")
+
+    overlay = status = None
+    if (args.show or args.record) and not args.dry_run:
+        from .overlay import OverlayStatus, OverlayThread, screen_grabber
+        status = OverlayStatus()
+        status.update(R_M=params["R_M"])
+        if vision is not None:
+            source = vision[1].get_debug_frame
+        else:
+            source = screen_grabber({"top": xp["camera"]["crop_top"], "left": 0,
+                                     "width": cam.width, "height": cam.height})
+        overlay = OverlayThread(status, source, cam.cx, cam.cy, show=args.show,
+                                record_path=(out / "overlay.mp4") if args.record else None,
+                                window_x=args.show_x, window_y=args.show_y)
+        overlay.start()
+        print(f"[overlay] 顯示{'＋錄影' if args.record else ''}已啟動（視窗位置 x = {args.show_x}）")
 
     u_cmd, u_prev, U, switcher = params["u_psi_init"], params["u_psi_init"], None, None
     s1, s2_last = (0.0, 0.0), (0.0, 0.0)
@@ -343,6 +395,17 @@ def main(argv=None):
                 rates = (float(np.clip(math.atan(-lam_u * s1[0] / f) / dt_mpc, -rate_max, rate_max)),
                          float(np.clip(math.atan(-lam_v * s1[1] / f) / dt_mpc, -rate_max, rate_max)))
 
+            if status is not None and mpc_tick:
+                upd = dict(t=now - t0, mode=mode, n1=n1, u_cmd=u_cmd, roll=st.roll_deg, u2=u2, v2=v2,
+                           R=math.hypot(st.jx - st.x, st.jy - st.y) if st.jeep_ok else np.nan,
+                           u1_truth=ut1, v1_truth=vt1, bbox=None)
+                if vision is not None:
+                    res, _ = vision[1].get_latest()
+                    upd.update(bbox=res.bbox if res.detected else None, conf=res.confidence,
+                               vision_text=f"YOLO: {'detected' if res.detected else 'MISSED'}  "
+                                           f"{vision[1].vision_fps:.0f} Hz  age {(now - res.timestamp) * 1e3:.0f} ms")
+                status.update(**upd)
+
             # 雲台：依真實經過時間積分
             pan = math.atan2(math.sin(pan + rates[0] * dt), math.cos(pan + rates[0] * dt))
             tilt = float(np.clip(tilt + rates[1] * dt, tilt_min, tilt_max))
@@ -367,7 +430,11 @@ def main(argv=None):
         print("\n[Yang X-Plane] 使用者中斷")
     finally:
         link.pause(True)
+        if overlay is not None:
+            overlay.stop()
+        yolo_frames = None
         if vision is not None:
+            yolo_frames = vision[1].frame_count - frames0
             vision[2].stop()
         rec.save_csv(out / "log.csv")
         if rec.rows:
@@ -376,12 +443,16 @@ def main(argv=None):
                            start=xp["scenario"]["start"], vc_paper=xp["scenario"]["jeep_speed_paper"],
                            jeep_speed_target=v_jeep, jeep_speed_paused_probe=v_meas,
                            **run_checks(rec, params, v_jeep, start_distance(xp, k, params)))
+            if yolo_frames is not None and summary["duration_s"] > 0:
+                summary["yolo_fps"] = yolo_frames / summary["duration_s"]   # YOLO 實際處理張數（yolo_hz 受 MPC 取樣上限 12.5 Hz）
             save_json(out / "summary.json", {"summary": summary, "params": params, "xp": xp})
             plot(rec, params, out / "overview.png",
                  f"Yang 2024 in X-Plane: {args.controller}, {args.measure}, start = {xp['scenario']['start']}")
             for key in ("duration_s", "loop_hz", "mpc_hz", "rmse_s2_norm_x537", "R_max_m", "time_outside_RM_s",
                         "u_sat_ratio", "psi_rate_tracking_rms", "agl_max_err_m", "roll_max_deg",
-                        "elevator_std"):
+                        "elevator_std", "yolo_detect_ratio", "yolo_fps", "yolo_age_ms_mean", "yolo_err_px_rms"):
+                if summary.get(key) is None:
+                    continue
                 print(f"  {key:24s} {summary[key]}")
         print(f"[Yang X-Plane] 結束，結果在 {out}")
     return out

@@ -54,3 +54,13 @@
 
 所有指令都在 repo 根目錄（有 `yang2024/` 和 `模擬程式/` 的那層）、`dive_sim` 環境下執行。
 結果存在 `results/xplane/<日期_時間>_<名稱>/`：`log.csv`、`summary.json`、圖。
+
+## 即時顯示視窗（`--show`、`--record`）
+類似學長 main.py 的顯示視窗：綠色十字圈 = 真值投影、紅框 = YOLO、左上 = MPC 模式（J1 綠／J2 黃／Jg 紅）、n1、R、u_ψ、坡度、YOLO 狀態。
+```
+python -m yang2024.xplane.run_yang --controller switch --measure yolo --yolo-model <best.pt> --vc 7 --show --record
+```
+- 視窗預設開在 x = 1920（主螢幕右邊的第二個螢幕）；第二個螢幕在左邊時加 `--show-x -1280`。
+- **YOLO 是截主螢幕**：視窗不能放在 X-Plane 那個螢幕上，否則 YOLO 會看到視窗。
+- `--record` 把畫面存成結果資料夾裡的 `overlay.mp4`（約 8 fps），可以直接放進簡報。
+- 顯示在獨立執行緒，不影響 50 Hz 控制迴圈。
