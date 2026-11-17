@@ -52,6 +52,7 @@ target_heading_init: 0.0    # 補：目標沿 +x 前進（對照 Fig. 4a）
 image_size: [1280, 720]     # 只用來標記是否出視野（HITL 的解析度），不影響控制
 # 「真實世界」效果（影像運動拆解用；預設關閉 = 論文數值模擬條件）
 yaw_tau: 0.0               # 實際偏航率對 u_psi 命令的一階延遲時間常數 [s]；0 = 立即生效
+yaw_gain: 1.0              # 實際偏航率 / u_psi 命令的穩態比；1 = 照命令（X-Plane SP80 飽和時約 1.05）
 bank_in_camera: false      # 協調轉彎滾轉角 atan(V·ψ̇/g) 是否帶動相機
 gravity: 9.81
 

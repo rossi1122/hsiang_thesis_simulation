@@ -9,6 +9,7 @@
 
 可選的「真實世界」效果（params.yaml，預設關閉 = 論文的數值模擬條件）：
   yaw_tau        > 0：實際偏航率以一階延遲追隨 u_psi 命令（論文假設 u_psi 立即生效）
+  yaw_gain       實際偏航率 / 命令的穩態比（預設 1；X-Plane SP80 在 u_max 時約 1.05）
   bank_in_camera true：協調轉彎的滾轉角 φ = atan(V·ψ̇/g) 會帶動相機（量測端轉 Ideal State 時已知 φ）
 """
 import numpy as np
@@ -58,6 +59,7 @@ def simulate(params, controller="switch", Vc=7.0, T=150.0, target_profile=None,
     last_s2 = (0.0, 0.0)
     steps = int(round(T / dt))
     tau = p.get("yaw_tau", 0.0)
+    yaw_gain = p.get("yaw_gain", 1.0)   # 實際偏航率 / 命令（X-Plane SP80 飽和時約 1.05）
     bank = p.get("bank_in_camera", False)
     g_acc = p.get("gravity", 9.81)
     psi_rate = p["u_psi_init"]  # 實際偏航率
@@ -101,10 +103,11 @@ def simulate(params, controller="switch", Vc=7.0, T=150.0, target_profile=None,
                 print(f"[t={t:6.2f}] {mode} 求解失敗：{info['status']}")
 
         # 這一步實際的偏航率（τ = 0 時就是命令）
+        u_act = yaw_gain * u_psi
         if tau > 0:
-            psi_rate += (1.0 - np.exp(-dt / tau)) * (u_psi - psi_rate)
+            psi_rate += (1.0 - np.exp(-dt / tau)) * (u_act - psi_rate)
         else:
-            psi_rate = u_psi
+            psi_rate = u_act
         pan_rate, tilt_rate = gimbal.rates(u1, v1)
         t_speed, _ = target.command(t)
 

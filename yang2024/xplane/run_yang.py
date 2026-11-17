@@ -136,7 +136,14 @@ def plot(rec, params, path, title):
     plt.close(fig)
 
 
-def run_checks(rec, params, v_jeep):
+def start_distance(xp, k, params):
+    """這個起始情境應有的水平距離：paper = 論文 (−85, 0)×k_L；far = far_distance_paper×k_L。"""
+    if xp["scenario"]["start"] == "far":
+        return float(xp["scenario"]["far_distance_paper"] * k["k_L"])
+    return float(np.hypot(*params["uav_init"]))
+
+
+def run_checks(rec, params, v_jeep, R0_target):
     """飛行中（沒暫停）的吉普車實際速度、起始水平距離，並在速度不對時提醒。"""
     t, jx, jy, R = (rec.column(c) for c in ("t", "jx", "jy", "R_truth"))
     ok = np.isfinite(jx) & np.isfinite(jy)
@@ -146,7 +153,6 @@ def run_checks(rec, params, v_jeep):
         if abs(v_run - v_jeep) > 0.1 * v_jeep:
             print(f"[檢查] ⚠️ 飛行中吉普車平均 {v_run:.1f} m/s，和應有的 {v_jeep:.1f} m/s 差超過 10%：這次結果不能和論文比")
     R0 = float(R[np.isfinite(R)][0]) if np.isfinite(R).any() else float("nan")
-    R0_target = float(np.hypot(*params["uav_init"]))
     print(f"[檢查] 吉普車飛行中平均 {v_run:.2f} m/s（應為 {v_jeep:.2f}）；起始水平距離 {R0:.0f} m（應為 {R0_target:.0f} m）")
     return {"jeep_speed_run": v_run, "R_start_m": R0, "R_start_target_m": R0_target}
 
@@ -334,7 +340,7 @@ def main(argv=None):
             summary.update(profile=xp["profile"], controller=args.controller, measure=args.measure,
                            start=xp["scenario"]["start"], vc_paper=xp["scenario"]["jeep_speed_paper"],
                            jeep_speed_target=v_jeep, jeep_speed_paused_probe=v_meas,
-                           **run_checks(rec, params, v_jeep))
+                           **run_checks(rec, params, v_jeep, start_distance(xp, k, params)))
             save_json(out / "summary.json", {"summary": summary, "params": params, "xp": xp})
             plot(rec, params, out / "overview.png",
                  f"Yang 2024 in X-Plane: {args.controller}, {args.measure}, start = {xp['scenario']['start']}")
