@@ -161,16 +161,20 @@ class XPLink:
                      "sim/graphics/view/pilots_head_z"], [0.0, 0.0, 0.0])
 
 
-def place_relative_to_jeep(link, st, xp, k, H):
-    """依 scenario 把飛機放在吉普車附近（吉普車座標：x 沿前進方向、y 往左）。回傳 (x, y, z, psi)。"""
+def place_relative_to_jeep(link, st, xp, k, H, jeep_shift=(0.0, 0.0)):
+    """依 scenario 把飛機放在吉普車附近（吉普車座標：x 沿前進方向、y 往左）。回傳 (x, y, z, psi)。
+
+    jeep_shift：吉普車在飛機擺好、暫停等待的這段時間會再開走的位移（世界座標），
+    先加上去，飛機解除暫停時和吉普車的距離才會是設定值（2026-11-17 第一次閉迴路：沒補時起始距離 280 m 而非 255 m）。
+    """
     sc = xp["scenario"]
     if sc["start"] == "far":
         dx, dy, dpsi = -sc["far_distance"], 0.0, 0.0
     else:  # paper：論文 (-85, 0)、航向和目標垂直往左，長度乘 k_L
         dx, dy, dpsi = -85.0 * k["k_L"], 0.0, math.pi / 2
     c, s = math.cos(st.jpsi), math.sin(st.jpsi)
-    x = st.jx + c * dx - s * dy
-    y = st.jy + s * dx + c * dy
+    x = st.jx + jeep_shift[0] + c * dx - s * dy
+    y = st.jy + jeep_shift[1] + s * dx + c * dy
     z = st.jz + H
     psi = st.jpsi + dpsi
     link.place(x, y, z, psi, xp["scaling"]["V_t"], throttle=xp["autopilot"]["thr_trim"])

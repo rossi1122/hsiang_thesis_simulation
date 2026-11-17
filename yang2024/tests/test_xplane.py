@@ -117,7 +117,8 @@ def test_camera_check_dry_run(tmp_path):
     base = rows[0]
     right = next(r for r in rows if r["pan_offset_deg"] > 0)
     up = next(r for r in rows if r["tilt_offset_deg"] < 0)
-    assert np.isclose(base["pred_px"], 960.0) and np.isclose(base["pred_py"], 510.0)
+    # 雲台對準後等 1 s 才量，期間吉普車照樣在開（暫停只停飛機）→ 不會剛好在正中央，但要很接近
+    assert abs(base["pred_px"] - 960.0) < 120 and abs(base["pred_py"] - 510.0) < 120
     assert right["pred_px"] > base["pred_px"]     # 雲台往左 → 目標在畫面右邊
     assert up["pred_py"] < base["pred_py"]        # 雲台往下 → 目標在畫面上方
 

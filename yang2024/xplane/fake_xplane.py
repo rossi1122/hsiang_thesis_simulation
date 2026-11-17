@@ -36,6 +36,7 @@ class FakeXPlane:
         for _ in range(n):
             if not self.paused:
                 self._step(h)
+            self._step_jeep(h)   # 吉普車在另一台筆電跑，飛機暫停時它照樣在開
             self.t += h
 
     def _step(self, h):
@@ -52,6 +53,8 @@ class FakeXPlane:
         self.lx += self.V * math.sin(hr) * h
         self.lz -= self.V * math.cos(hr) * h
         self.ly += self.V * math.sin(gamma) * h
+
+    def _step_jeep(self, h):
         jr = math.radians(self.jhdg)
         self.jx += self.jv * math.sin(jr) * h
         self.jz -= self.jv * math.cos(jr) * h

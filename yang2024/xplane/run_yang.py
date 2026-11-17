@@ -172,8 +172,15 @@ def main(argv=None):
 
     st = wait_for_jeep(link, clock)
     if not args.no_reset:
-        place_relative_to_jeep(link, st, xp, k, H)
-        clock.sleep(2.0)
+        # 先量吉普車速度，擺放時預先補上「暫停等待 2 s」期間吉普車會開走的距離
+        clock.sleep(0.5)
+        st2 = link.read()
+        dtj = max(st2.t - st.t, 1e-3)
+        settle = 2.0
+        shift = ((st2.jx - st.jx) / dtj * (settle + 0.1), (st2.jy - st.jy) / dtj * (settle + 0.1))
+        print(f"[擺放] 吉普車速度約 {math.hypot(st2.jx - st.jx, st2.jy - st.jy) / dtj:.1f} m/s")
+        place_relative_to_jeep(link, st2, xp, k, H, jeep_shift=shift)
+        clock.sleep(settle)
         st = link.read()
         print(f"[擺放] 飛機離地 {link.read().agl:.0f} m（目標 {H:.0f} m）")
     pan, tilt = geo.pointing_angles(st.jeep_pos, st.pos, st.psi,
@@ -214,6 +221,10 @@ def main(argv=None):
             if st.agl < min_agl:
                 print(f"[Yang X-Plane] 離地 {st.agl:.0f} m < {min_agl:.0f} m，暫停並結束")
                 break
+            if st.airspeed < 5.0 and now - t0 < 1.0:
+                # 剛解除暫停時 X-Plane 有時回傳空速 0：跳過這一圈，避免油門被推到全開
+                clock.sleep(tick - (clock.now() - now))
+                continue
             pitch, roll = math.radians(st.pitch_deg), math.radians(st.roll_deg)
             poses.add(now, pan, tilt, pitch, roll)
             ut1, vt1, depth = cam.project_truth(st, pan, tilt) if st.jeep_ok else (np.nan, np.nan, -1)
