@@ -13,7 +13,8 @@ scaling:
 # ---------- 兩個測試版本（命令列 --profile 選擇；預設 scaled） ----------
 # 每個 profile 只寫「和上面共用設定不同」的部分，會覆寫上去。
 #   scaled  ：尺度版 V = 30 m/s、H = 300 m（SP80 已驗證可飛，內迴路已調好）
-#   original：論文原值 V = 16 m/s、H = 100 m（k = 1，直接用 Table 1；SP80 能不能飛 16 m/s 要先用 step_test 確認）
+#   original：論文原值 V = 16 m/s、H = 100 m（k = 1，直接用 Table 1）
+#             ⚠️ 2026-11-17 step_test 兩次：SP80 在約 18.6 m/s、坡度 20° 就失速翻滾 → SP80 飛不了，需換能慢飛的機型
 profiles:
   scaled: {}
   original:
