@@ -1,6 +1,6 @@
 """Phase 2：開迴路階躍測試（不需要吉普車）。
 
-先定高定速平飛 hold_s 秒，再依序送 u_psi 階躍命令（xp_params.yaml 的 step_test.steps），量測：
+先定高定速平飛 hold_s 秒，再依序送 u_psi 階躍命令（xp_params.yaml 的 step_test.steps_frac × u_max），量測：
   - 實際航向變化率 ψ̇ 對命令的一階反應：時間常數 τ、延遲 t_d、穩態增益（Phase 4 的 ② 要用）
   - 最大命令 u_max 做不做得到（穩態增益是否接近 1）、需要多少坡度
   - 轉彎時高度、空速掉多少（內迴路增益要不要調）
@@ -8,6 +8,7 @@
 用法（飛機 PC，repo 根目錄）：
     python -m yang2024.xplane.step_test               # 從目前位置往上擺到 H，開始測試
     python -m yang2024.xplane.step_test --dry-run     # 用假的 X-Plane 測試程式
+    python -m yang2024.xplane.step_test --profile original   # 論文原值版 V 16 m/s、H 100 m
 """
 import argparse
 import math
@@ -16,13 +17,20 @@ from pathlib import Path
 import numpy as np
 
 from .autopilot import BankToTurnAutopilot
-from .common import Recorder, output_dir, save_json, setup
+from .common import add_profile_arg, Recorder, output_dir, save_json, setup
 
 
-def schedule(cfg):
+def step_commands(cfg, u_max):
+    """u_psi 命令 [rad/s]：有 steps（絕對值）就用，否則 steps_frac × u_max。"""
+    if "steps" in cfg:
+        return [float(c) for c in cfg["steps"]]
+    return [round(float(c) * u_max, 4) for c in cfg["steps_frac"]]
+
+
+def schedule(cfg, u_max):
     """回傳 [(開始時間, 結束時間, 命令)]。"""
     seg, t = [(0.0, cfg["hold_s"], 0.0)], cfg["hold_s"]
-    for c in cfg["steps"]:
+    for c in step_commands(cfg, u_max):
         seg.append((t, t + cfg["step_s"], float(c)))
         t += cfg["step_s"]
     return seg
@@ -119,11 +127,12 @@ def main(argv=None):
     ap.add_argument("--no-reset", action="store_true", help="不重新擺放飛機")
     ap.add_argument("--dry-run", action="store_true", help="用假的 X-Plane")
     ap.add_argument("--out", default=None, help="輸出資料夾（預設 results/xplane/<時間>_step_test）")
+    add_profile_arg(ap)
     args = ap.parse_args(argv)
 
-    link, clock, params, xp, k = setup(dry_run=args.dry_run)
+    link, clock, params, xp, k = setup(dry_run=args.dry_run, profile=args.profile)
     H, V = params["H"], params["V_t"]
-    segs = schedule(xp["step_test"])
+    segs = schedule(xp["step_test"], params["u_max"])
     T = segs[-1][1]
     autopilot = BankToTurnAutopilot(xp["autopilot"], V_cmd=V, H_cmd=H)
     out = Path(args.out) if args.out else output_dir(xp, "step_test")
@@ -134,7 +143,7 @@ def main(argv=None):
         link.place(st.x, st.y, st.z - st.agl + H, st.psi, V, throttle=xp["autopilot"]["thr_trim"])
         clock.sleep(2.0)
         print(f"[擺放] 飛機離地 {link.read().agl:.0f} m（目標 {H:.0f} m）")
-    print(f"[step test] 共 {T:.0f} s：先平飛 {segs[0][1]:.0f} s，再依序送 u_psi = {xp['step_test']['steps']}")
+    print(f"[step test] 共 {T:.0f} s：先平飛 {segs[0][1]:.0f} s，再依序送 u_psi = {step_commands(xp['step_test'], params['u_max'])}")
     rec = Recorder()
     tick = 1.0 / xp["loop"]["control_hz"]
     min_agl = xp["loop"]["min_agl_ratio"] * H

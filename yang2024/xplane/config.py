@@ -51,9 +51,30 @@ def scale_params(paper, V_t, H, f):
     return p, {"k_L": kL, "k_V": kV, "k_T": kT, "k_f": kf}
 
 
-def build(xp_path=None, **overrides):
-    """回傳 (MPC 用的參數, X-Plane 設定, 縮放因子)。overrides 覆寫 X-Plane 設定的 scaling。"""
+PROFILES = ("scaled", "original")
+
+
+def _merge(base, over):
+    for key, val in (over or {}).items():
+        if isinstance(val, dict) and isinstance(base.get(key), dict):
+            _merge(base[key], val)
+        else:
+            base[key] = val
+    return base
+
+
+def build(xp_path=None, profile="scaled", **overrides):
+    """回傳 (MPC 用的參數, X-Plane 設定, 縮放因子)。
+
+    profile：xp_params.yaml 裡 profiles 的名字（scaled = 尺度版、original = 論文原值），覆寫共用設定。
+    overrides 再覆寫 scaling 的 V_t、H。
+    """
     xp = load_xp(xp_path)
+    profiles = xp.pop("profiles", {}) or {}
+    if profile not in profiles:
+        raise ValueError(f"xp_params.yaml 沒有 profile「{profile}」，可用：{list(profiles)}")
+    _merge(xp, profiles[profile])
+    xp["profile"] = profile
     xp["scaling"].update({k: v for k, v in overrides.items() if k in ("V_t", "H")})
     f = camera_f(xp["camera"])
     params, k = scale_params(load_params(), xp["scaling"]["V_t"], xp["scaling"]["H"], f)

@@ -22,7 +22,7 @@ import numpy as np
 
 from .. import geometry as geo
 from .camera import XPCamera
-from .common import output_dir, save_json, setup, wait_for_jeep
+from .common import add_profile_arg, output_dir, save_json, setup, wait_for_jeep
 from .xp_link import place_relative_to_jeep
 
 OFFSETS_DEG = [(0.0, 0.0), (5.0, 0.0), (-5.0, 0.0), (0.0, -5.0), (0.0, 5.0)]  # (pan, tilt)
@@ -36,9 +36,10 @@ def main(argv=None):
                     help="paper：吉普車後方 255 m（斜距約 394 m）；far：後方 900 m（斜距約 950 m）")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--out", default=None)
+    add_profile_arg(ap)
     args = ap.parse_args(argv)
 
-    link, clock, params, xp, k = setup(dry_run=args.dry_run)
+    link, clock, params, xp, k = setup(dry_run=args.dry_run, profile=args.profile)
     xp["scenario"]["start"] = args.start
     cam = XPCamera(xp["camera"])
     out = Path(args.out) if args.out else output_dir(xp, "camera_check")
@@ -54,7 +55,7 @@ def main(argv=None):
     clock.sleep(1.0)
     st = link.read()
     dist = math.dist(st.pos, st.jeep_pos)
-    back = 85.0 * k["k_L"] if args.start == "paper" else xp["scenario"]["far_distance"]
+    back = 85.0 * k["k_L"] if args.start == "paper" else xp["scenario"]["far_distance_paper"] * k["k_L"]
     print(f"[camera check] 飛機離地 {st.agl:.0f} m、和吉普車的直線距離 {dist:.0f} m（預期約 "
           f"{params['H']:.0f} m 與 {math.hypot(params['H'], back):.0f} m）"
           f"，俯仰校正 {xp['camera']['head_pitch_bias_deg']}°")

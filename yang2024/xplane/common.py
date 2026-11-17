@@ -6,20 +6,33 @@ from datetime import datetime
 
 import numpy as np
 
-from .config import build, log_dir
+from .config import PROFILES, build, log_dir
 from .fake_xplane import FakeXPlane, RealClock
 from .xp_link import XPLink
 
 
-def setup(dry_run=False, jeep_speed=None, **scale_overrides):
+def add_profile_arg(ap):
+    ap.add_argument("--profile", choices=PROFILES, default="scaled",
+                    help="scaled = 尺度版 V 30 m/s、H 300 m（預設）；original = 論文原值 V 16 m/s、H 100 m")
+
+
+def setup(dry_run=False, jeep_speed=None, profile="scaled", **scale_overrides):
     """回傳 (link, clock, params, xp, k)。dry_run 用假的 X-Plane。"""
-    params, xp, k = build(**scale_overrides)
+    params, xp, k = build(profile=profile, **scale_overrides)
+    print(f"[版本] {profile}：V = {params['V_t']:g} m/s、H = {params['H']:g} m、"
+          f"R_M = {params['R_M']:g} m、u_max = {params['u_max']:.4f} rad/s、"
+          f"吉普車應為 {jeep_speed_target(xp, k):.1f} m/s")
     if dry_run:
-        speed = jeep_speed if jeep_speed is not None else xp["scenario"]["jeep_speed_paper"] * k["k_V"]
+        speed = jeep_speed if jeep_speed is not None else jeep_speed_target(xp, k)
         fake = FakeXPlane(jeep_speed=speed)
         return XPLink(xp, client=fake, clock=fake.now), fake, params, xp, k
     clock = RealClock()
     return XPLink(xp, clock=clock.now), clock, params, xp, k
+
+
+def jeep_speed_target(xp, k):
+    """吉普車應該開的速度 = 論文 V_c × k_V（scaled 7 → 13.1 m/s；original 7 → 7 m/s）。"""
+    return xp["scenario"]["jeep_speed_paper"] * k["k_V"]
 
 
 def wait_for_jeep(link, clock, timeout=10.0):
@@ -54,7 +67,7 @@ class Recorder:
 
 
 def output_dir(xp, name):
-    d = log_dir(xp) / f"{datetime.now():%Y%m%d_%H%M%S}_{name}"
+    d = log_dir(xp) / f"{datetime.now():%Y%m%d_%H%M%S}_{xp.get('profile', 'scaled')}_{name}"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

@@ -14,10 +14,23 @@
 | 時間 | 每圈固定加 0.01 s（實際比真實慢一倍） | 用真實經過時間 |
 | 目標特徵 | YOLO | `truth`：吉普車真值投影（Stage 3）；`yolo`：學長的 YOLO 執行緒（Stage 4） |
 
-## 參數縮放（`xp_params.yaml`）
-SP80 飛不了論文的 16 m/s，所以照比例放大，保持所有無因次量和論文相同：
+## 兩個版本（`--profile`）
+三支程式（camera_check、step_test、run_yang）都可以加 `--profile`：
 
-| | 論文 | X-Plane（V = 30 m/s、H = 300 m） |
+| | `--profile scaled`（預設，尺度版） | `--profile original`（論文原值） |
+|---|---|---|
+| V / H | 30 m/s / 300 m | 16 m/s / 100 m |
+| 參數 | 依下表按比例換算，無因次量和論文相同 | 直接用 Table 1（k = 1） |
+| 吉普車速度（V_c = 7） | 13.1 m/s | 7 m/s |
+| 狀態 | SP80 已驗證可飛、內迴路已調好 | **要先用 step_test 確認 SP80 能飛 16 m/s**；需要改的增益寫在 `profiles.original.autopilot` |
+
+結果資料夾名稱會帶版本，例如 `20261117_160000_original_yang_switch_truth_paper`。
+共用設定（相機、連線、自駕儀增益）寫在 `xp_params.yaml` 上方；各版本只寫不一樣的部分。
+
+## 參數縮放（`xp_params.yaml`）
+尺度版照比例放大，保持所有無因次量和論文相同：
+
+| | 論文（= original 版） | X-Plane 尺度版（V = 30 m/s、H = 300 m） |
 |---|---|---|
 | 高度 H / 空速 V_t | 100 m / 16 m/s | 300 m / 30 m/s |
 | 盤旋半徑 R_d / 感知範圍 R_M / ΔR | 50 / 100 / 10 m | 150 / 300 / 30 m |

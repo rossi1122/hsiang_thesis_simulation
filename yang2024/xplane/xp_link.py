@@ -169,7 +169,7 @@ def place_relative_to_jeep(link, st, xp, k, H, jeep_shift=(0.0, 0.0)):
     """
     sc = xp["scenario"]
     if sc["start"] == "far":
-        dx, dy, dpsi = -sc["far_distance"], 0.0, 0.0
+        dx, dy, dpsi = -sc["far_distance_paper"] * k["k_L"], 0.0, 0.0
     else:  # paper：論文 (-85, 0)、航向和目標垂直往左，長度乘 k_L
         dx, dy, dpsi = -85.0 * k["k_L"], 0.0, math.pi / 2
     c, s = math.cos(st.jpsi), math.sin(st.jpsi)

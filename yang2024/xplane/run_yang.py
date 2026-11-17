@@ -29,7 +29,7 @@ from ..baselines import lsm_u_psi
 from ..mpc import Switcher, YangMPC
 from .autopilot import BankToTurnAutopilot
 from .camera import XPCamera
-from .common import Recorder, output_dir, save_json, setup, wait_for_jeep
+from .common import add_profile_arg, jeep_speed_target, Recorder, output_dir, save_json, setup, wait_for_jeep
 from .xp_link import import_senior, place_relative_to_jeep
 
 
@@ -146,9 +146,10 @@ def main(argv=None):
     ap.add_argument("--no-reset", action="store_true", help="不重新擺放飛機，從目前位置開始")
     ap.add_argument("--dry-run", action="store_true", help="用假的 X-Plane（不需要 X-Plane）")
     ap.add_argument("--out", default=None, help="輸出資料夾（預設 results/xplane/<時間>_yang_...）")
+    add_profile_arg(ap)
     args = ap.parse_args(argv)
 
-    link, clock, params, xp, k = setup(dry_run=args.dry_run)
+    link, clock, params, xp, k = setup(dry_run=args.dry_run, profile=args.profile)
     if args.start:
         xp["scenario"]["start"] = args.start
     T = args.time if args.time is not None else xp["loop"]["max_time_s"]
@@ -167,8 +168,9 @@ def main(argv=None):
 
     print(f"[Yang X-Plane] V = {V} m/s、H = {H} m、R_d = {params['R_d']:.0f} m、R_M = {params['R_M']:.0f} m、"
           f"u_max = {params['u_max']:.4f} rad/s、Δt = {dt_mpc:.3f} s、f = {f:.1f} px")
+    v_jeep = jeep_speed_target(xp, k)
     print(f"[Yang X-Plane] 吉普車速度應為 {xp['scenario']['jeep_speed_paper']} × {k['k_V']:.3f} = "
-          f"{xp['scenario']['jeep_speed_paper'] * k['k_V']:.1f} m/s（jeep_controller.py --speed）")
+          f"{v_jeep:.1f} m/s（jeep_controller.py --speed）")
 
     st = wait_for_jeep(link, clock)
     if not args.no_reset:
@@ -178,7 +180,10 @@ def main(argv=None):
         dtj = max(st2.t - st.t, 1e-3)
         settle = 2.0
         shift = ((st2.jx - st.jx) / dtj * (settle + 0.1), (st2.jy - st.jy) / dtj * (settle + 0.1))
-        print(f"[擺放] 吉普車速度約 {math.hypot(st2.jx - st.jx, st2.jy - st.jy) / dtj:.1f} m/s")
+        v_meas = math.hypot(st2.jx - st.jx, st2.jy - st.jy) / dtj
+        print(f"[擺放] 吉普車速度約 {v_meas:.1f} m/s")
+        if abs(v_meas - v_jeep) > 0.2 * v_jeep:
+            print(f"[擺放] ⚠️ 吉普車速度和這個版本應有的 {v_jeep:.1f} m/s 差很多：筆電的 jeep_controller.py --speed 要改")
         place_relative_to_jeep(link, st2, xp, k, H, jeep_shift=shift)
         clock.sleep(settle)
         st = link.read()
@@ -303,7 +308,8 @@ def main(argv=None):
         rec.save_csv(out / "log.csv")
         if rec.rows:
             summary = summarize(rec, params, k, dt_mpc)
-            summary.update(controller=args.controller, measure=args.measure, start=xp["scenario"]["start"])
+            summary.update(profile=xp["profile"], controller=args.controller, measure=args.measure,
+                           start=xp["scenario"]["start"])
             save_json(out / "summary.json", {"summary": summary, "params": params, "xp": xp})
             plot(rec, params, out / "overview.png",
                  f"Yang 2024 in X-Plane: {args.controller}, {args.measure}, start = {xp['scenario']['start']}")

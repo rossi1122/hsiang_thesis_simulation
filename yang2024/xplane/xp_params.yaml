@@ -10,6 +10,18 @@ scaling:
   V_t: 30.0
   H: 300.0
 
+# ---------- 兩個測試版本（命令列 --profile 選擇；預設 scaled） ----------
+# 每個 profile 只寫「和上面共用設定不同」的部分，會覆寫上去。
+#   scaled  ：尺度版 V = 30 m/s、H = 300 m（SP80 已驗證可飛，內迴路已調好）
+#   original：論文原值 V = 16 m/s、H = 100 m（k = 1，直接用 Table 1；SP80 能不能飛 16 m/s 要先用 step_test 確認）
+profiles:
+  scaled: {}
+  original:
+    scaling:
+      V_t: 16.0
+      H: 100.0
+    autopilot: {}            # 16 m/s 時舵面效率變低，step_test 後把需要調的增益寫在這裡（只寫要改的）
+
 # ---------- X-Plane 相機（學長環境：全螢幕 1920×1080、橫向視場 60°、擷取時切掉上方 30 px） ----------
 camera:
   render_width: 1920
@@ -71,11 +83,12 @@ scenario:
   # paper：論文 Section 4，飛機在目標後方 85 m、航向和目標垂直（往左） → 乘上 k_L
   # far  ：飛機在目標正後方 far_distance、同方向（回答老師疑慮 (1)）
   start: paper
-  far_distance: 900.0
+  far_distance_paper: 300.0 # 論文尺度的距離，實際 = 這個 × k_L（scaled 900 m、original 300 m）
   jeep_speed_paper: 7.0      # 論文的 V_c；實際吉普車速度 = 這個 × k_V，跑 jeep_controller.py 時要給這個值
 
 # ---------- 開迴路階躍測試（Phase 2） ----------
 step_test:
   hold_s: 20.0
   step_s: 15.0
-  steps: [0.1, 0.0, -0.1, 0.0, 0.2, 0.0, -0.2, 0.0, 0.3125, 0.0, -0.3125, 0.0]   # u_psi 命令 [rad/s]
+  # u_psi 命令 = 這些比例 × u_max（scaled：0.1、0.2、0.3125 rad/s；original：0.16、0.32、0.5 rad/s）
+  steps_frac: [0.32, 0.0, -0.32, 0.0, 0.64, 0.0, -0.64, 0.0, 1.0, 0.0, -1.0, 0.0]

@@ -244,3 +244,9 @@ V_c = 10 時三者都會反覆超出 R_M（切換式 14%、P1,soft 22–26%、LS
 - **座艙視角看起來抖**：目標在畫面上的殘差（扣掉 1 s 平均）只有約 1–2 px，目標本身很穩；
   看起來抖的是背景，因為雲台只有 pan/tilt 兩軸、沒有滾轉穩定（和論文相同），飛機坡度 ±45° 時整個地面在畫面中旋轉，
   加上視角每 20 ms 才更新一次。這正對應 Phase 1 拆解的「② 飛機姿態是 s₁ 最大的誤差來源」。
+
+### 分成兩個版本（2026-11-17）
+- 命令列 `--profile scaled`（預設，V = 30 m/s、H = 300 m，按比例換算）與 `--profile original`（論文原值 V = 16 m/s、H = 100 m，k = 1）。
+- 之前寫「SP80 飛不了 16 m/s」只是假設，沒有實測過；original 版要先跑 `step_test --profile original` 確認
+  空速能維持、坡度 39° 不失速、高度誤差在 100 m 下可以接受，再視結果在 `profiles.original.autopilot` 調增益。
+- 遠距離起始改成論文尺度 `far_distance_paper = 300 m` × k_L；step_test 命令改成 u_max 的比例（scaled 版數值不變）。

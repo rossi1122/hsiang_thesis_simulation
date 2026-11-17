@@ -127,3 +127,34 @@ def test_scale_params_roundtrip():
     p, k = scale_params(PAPER, PAPER["V_t"], PAPER["H"], PAPER["f"])
     for key in ("u_max", "a_max", "dt", "R_d", "Q_u"):
         assert np.isclose(np.asarray(p[key]), np.asarray(PAPER[key])).all()
+
+
+def test_profile_original_is_paper_values():
+    """original 版：k 全部 = 1，MPC 參數就是 Table 1（只有 f 換成 X-Plane 的）。"""
+    from yang2024 import load_params
+    from yang2024.xplane.config import build
+    params, xp, k = build(profile="original")
+    paper = load_params()
+    assert xp["profile"] == "original"
+    assert np.isclose(k["k_L"], 1) and np.isclose(k["k_V"], 1) and np.isclose(k["k_T"], 1)
+    for key in ("V_t", "H", "R_d", "R_M", "dR", "u_max", "a_max", "dt", "Q_u"):
+        assert np.isclose(params[key], paper[key]), key
+    scaled, xs, ks = build(profile="scaled")
+    assert np.isclose(scaled["V_t"], 30) and np.isclose(ks["k_L"], 3)
+    # 兩個版本的共用設定（相機、自駕儀）一樣
+    assert xs["camera"] == xp["camera"]
+
+
+def test_step_commands_follow_u_max():
+    from yang2024.xplane.step_test import step_commands
+    cfg = XP["step_test"]
+    assert np.isclose(max(step_commands(cfg, 0.3125)), 0.3125)
+    assert np.isclose(max(step_commands(cfg, 0.5)), 0.5)
+    assert np.isclose(step_commands(cfg, 0.3125)[0], 0.1)
+
+
+def test_run_yang_original_dry_run(tmp_path):
+    out = run_yang.main(["--dry-run", "--profile", "original", "--time", "20", "--out", str(tmp_path)])
+    import json
+    s = json.loads((out / "summary.json").read_text(encoding="utf-8"))["summary"]
+    assert s["profile"] == "original" and np.isclose(s["scale"]["k_L"], 1)
