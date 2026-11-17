@@ -80,7 +80,8 @@ def summarize(rec, params, k, dt_mpc):
         "u_sat_ratio": float(np.mean(np.abs(u) >= 0.999 * params["u_max"])),
         "solve_ms_mean": float(np.nanmean(solve)) if np.isfinite(solve).any() else None,
         "solve_ms_max": float(np.nanmax(solve)) if np.isfinite(solve).any() else None,
-        "psi_rate_tracking_rms": float(np.sqrt(np.nanmean((rec.column("psi_rate") - rec.column("u_cmd"))**2))),
+        "psi_rate_tracking_rms": float(np.sqrt(np.nanmean((rec.column("psi_rate_coord") - rec.column("u_cmd"))**2))),
+        "elevator_std": float(np.nanstd(rec.column("elevator"))),
         "agl_rms_err_m": float(np.sqrt(np.nanmean((rec.column("agl") - params["H"])**2))),
         "agl_max_err_m": float(np.nanmax(np.abs(rec.column("agl") - params["H"]))),
         "airspeed_rms_err": float(np.sqrt(np.nanmean((rec.column("airspeed") - params["V_t"])**2))),
@@ -108,7 +109,7 @@ def plot(rec, params, path, title):
     a.set(title="horizontal distance R (m)", xlabel="t (s)")
     a = ax[0, 2]
     a.plot(t, rec.column("u_cmd"), label="u_psi command")
-    a.plot(t, rec.column("psi_rate"), label="actual heading rate")
+    a.plot(t, rec.column("psi_rate_coord"), label="actual heading rate (g·tanφ/V)")
     a.axhline(params["u_max"], color="k", ls="--", lw=1)
     a.axhline(-params["u_max"], color="k", ls="--", lw=1)
     a.set(title="u_psi (rad/s)", xlabel="t (s)")
@@ -271,7 +272,9 @@ def main(argv=None):
             link.controls(elev, ail, rud, thr)
 
             rec.add(t=now, mpc_tick=int(mpc_tick), x=st.x, y=st.y, agl=st.agl, psi=st.psi,
-                    heading=st.heading_deg, psi_rate=st.psi_rate, roll=st.roll_deg, pitch=st.pitch_deg,
+                    heading=st.heading_deg, psi_rate=st.psi_rate,
+                    psi_rate_coord=-9.81 * math.tan(math.radians(st.roll_deg)) / max(st.airspeed, 1.0),
+                    roll=st.roll_deg, pitch=st.pitch_deg,
                     airspeed=st.airspeed, jx=st.jx, jy=st.jy, jeep_ok=int(st.jeep_ok),
                     R_truth=math.hypot(st.jx - st.x, st.jy - st.y) if st.jeep_ok else np.nan,
                     u_cmd=u_cmd, phi_cmd=autopilot.last["phi_cmd"], theta_cmd=autopilot.last["theta_cmd"],
@@ -294,7 +297,8 @@ def main(argv=None):
             plot(rec, params, out / "overview.png",
                  f"Yang 2024 in X-Plane: {args.controller}, {args.measure}, start = {xp['scenario']['start']}")
             for key in ("duration_s", "loop_hz", "mpc_hz", "rmse_s2_norm_x537", "R_max_m", "time_outside_RM_s",
-                        "u_sat_ratio", "psi_rate_tracking_rms", "agl_max_err_m", "roll_max_deg"):
+                        "u_sat_ratio", "psi_rate_tracking_rms", "agl_max_err_m", "roll_max_deg",
+                        "elevator_std"):
                 print(f"  {key:24s} {summary[key]}")
         print(f"[Yang X-Plane] 結束，結果在 {out}")
     return out

@@ -54,8 +54,10 @@ autopilot:
   bank_pitch_comp_deg: 8.0   # 轉彎時加的抬頭量 × (1/cosφ − 1)
   theta_limit_deg: [-12.0, 15.0]
   K_theta: 3.0
-  K_q: 0.06
+  K_q: 0.02                  # 2026-11-17 step_test：0.06 時升降舵在 ±1 間每圈來回跳（高頻振盪），降為 0.02
   elev_limit: 1.0
+  elev_slew_per_s: 2.5       # 升降舵每秒最多變化（50 Hz 時每圈 0.05；學長每圈 0.20）
+  elev_lpf_tau_s: 0.08       # 升降舵輸出一階低通時間常數
   # 空速 → 油門
   thr_trim: 0.45
   k_v: 0.08                  # 1 / (m/s)

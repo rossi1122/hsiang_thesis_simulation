@@ -21,6 +21,7 @@ class BankToTurnAutopilot:
         self.i_phi = 0.0
         self.i_h = 0.0
         self.i_v = 0.0
+        self.elev_prev = 0.0
         self.last = {}
 
     def phi_command_deg(self, u_psi, V):
@@ -47,12 +48,21 @@ class BankToTurnAutopilot:
         theta_cmd = (g["theta_trim_deg"] + g["k_h"] * e_h + g["k_h_i"] * self.i_h - g["k_hdot"] * st.vz
                      + g["bank_pitch_comp_deg"] * (1.0 / math.cos(bank) - 1.0))
         theta_cmd = float(np.clip(theta_cmd, *g["theta_limit_deg"]))
+        # 俯仰角的變化率 θ̇ = Q·cosφ − R·sinφ（deg/s）。不能直接用機體 Q：坡度轉彎時 Q 有 ψ̇·sinφ 的固定分量
+        phr = math.radians(st.roll_deg)
+        theta_dot = st.Q * math.cos(phr) - st.R * math.sin(phr)
         q_cmd = g["K_theta"] * (theta_cmd - st.pitch_deg)
-        elevator = float(np.clip(g["K_q"] * (q_cmd - st.Q), -g["elev_limit"], g["elev_limit"]))
+        elev_raw = float(np.clip(g["K_q"] * (q_cmd - theta_dot), -g["elev_limit"], g["elev_limit"]))
+        # 同學長 inner_loop_controller：升降舵變化率限制 + 一階低通，避免全推全拉的高頻振盪
+        step = g["elev_slew_per_s"] * dt
+        elev_raw = float(np.clip(elev_raw, self.elev_prev - step, self.elev_prev + step))
+        a = dt / (g["elev_lpf_tau_s"] + dt)
+        elevator = self.elev_prev + a * (elev_raw - self.elev_prev)
+        self.elev_prev = elevator
         # ---------------- 空速 → 油門
         e_v = self.V_cmd - st.airspeed
         self.i_v = float(np.clip(self.i_v + e_v * dt, -20.0, 20.0))
         throttle = float(np.clip(g["thr_trim"] + g["k_v"] * e_v + g["k_v_i"] * self.i_v, *g["thr_limit"]))
 
-        self.last = dict(phi_cmd=phi_cmd, theta_cmd=theta_cmd, r_ref=r_ref)
+        self.last = dict(phi_cmd=phi_cmd, theta_cmd=theta_cmd, r_ref=r_ref, theta_dot=theta_dot)
         return elevator, aileron, rudder, throttle

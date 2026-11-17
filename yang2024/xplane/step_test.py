@@ -49,7 +49,8 @@ def fit_first_order(t, y, y0, cmd):
 def analyze(rec, segs, params):
     t = rec.column("t")
     t = t - t[0]
-    rate, roll = rec.column("psi_rate"), rec.column("roll")
+    # 用協調轉彎的航向變化率 g·tanφ/V 擬合：由滾轉角算，比用機體角速度 (P, Q, R) 算的平滑很多
+    rate, roll = rec.column("psi_rate_coord"), rec.column("roll")
     agl, spd = rec.column("agl"), rec.column("airspeed")
     results = []
     for i, (a, b, cmd) in enumerate(segs[1:], start=1):
@@ -74,6 +75,10 @@ def analyze(rec, segs, params):
         "gain_at_u_max": gains,
         "hold_agl_rms_err_m": float(np.sqrt(np.nanmean((agl[t < segs[0][1]] - params["H"]) ** 2))),
         "hold_airspeed_rms_err": float(np.sqrt(np.nanmean((spd[t < segs[0][1]] - params["V_t"]) ** 2))),
+        # 升降舵抖動：平飛時的標準差。2026-11-17 第一次測 0.68（全推全拉振盪），正常應 < 0.05
+        "hold_elevator_std": float(np.nanstd(rec.column("elevator")[t < segs[0][1]])),
+        "pitch_std_deg": float(np.nanstd(rec.column("pitch") - np.convolve(
+            rec.column("pitch"), np.ones(50) / 50, mode="same"))),
     }
 
 
@@ -85,7 +90,8 @@ def plot(rec, segs, res, params, path):
     t = t - t[0]
     fig, ax = plt.subplots(4, 1, figsize=(12, 11), sharex=True)
     ax[0].plot(t, rec.column("u_cmd"), label="u_psi command")
-    ax[0].plot(t, rec.column("psi_rate"), label="actual heading rate")
+    ax[0].plot(t, rec.column("psi_rate"), label="heading rate from body rates (P, Q, R)", alpha=0.4)
+    ax[0].plot(t, rec.column("psi_rate_coord"), label="heading rate from roll: g·tanφ/V")
     for r in res["steps"]:
         if "tau_s" in r:
             ax[0].annotate(f"τ={r['tau_s']:.2f}s", (r["t_start"] + 1, r["cmd"]), fontsize=8)
@@ -93,7 +99,8 @@ def plot(rec, segs, res, params, path):
     ax[1].plot(t, rec.column("phi_cmd"), label="roll command")
     ax[1].plot(t, rec.column("roll"), label="roll")
     ax[1].set_ylabel("deg")
-    ax[2].plot(t, rec.column("agl") - params["H"], label="AGL − H")
+    ax[2].plot(t, rec.column("agl") - params["H"], label="AGL − H (m)")
+    ax[2].plot(t, rec.column("elevator") * 10, label="elevator × 10", alpha=0.6)
     ax[2].set_ylabel("m")
     ax[3].plot(t, rec.column("airspeed") - params["V_t"], label="airspeed − V")
     ax[3].set_ylabel("m/s")
@@ -147,7 +154,10 @@ def main(argv=None):
                 break
             elev, ail, rud, thr = autopilot.update(st, u_cmd, dt)
             link.controls(elev, ail, rud, thr)
-            rec.add(t=now, u_cmd=u_cmd, psi_rate=st.psi_rate, roll=st.roll_deg, pitch=st.pitch_deg,
+            rec.add(t=now, u_cmd=u_cmd, psi_rate=st.psi_rate,
+                    psi_rate_coord=-9.81 * math.tan(math.radians(st.roll_deg)) / max(st.airspeed, 1.0),
+                    P=st.P, Q=st.Q, R=st.R, theta_dot=autopilot.last["theta_dot"],
+                    roll=st.roll_deg, pitch=st.pitch_deg,
                     phi_cmd=autopilot.last["phi_cmd"], agl=st.agl, airspeed=st.airspeed,
                     elevator=elev, aileron=ail, rudder=rud, throttle=thr, x=st.x, y=st.y)
             clock.sleep(tick - (clock.now() - now))
@@ -162,6 +172,8 @@ def main(argv=None):
             plot(rec, segs, res, params, out / "step_test.png")
         print(f"[step test] τ 中位數 = {res.get('tau_median_s')} s、延遲 = {res.get('delay_median_s')} s、"
               f"u_max 時穩態增益 = {res.get('gain_at_u_max')}")
+        print(f"[step test] 平飛時升降舵抖動（標準差）= {res.get('hold_elevator_std')}（< 0.05 正常）、"
+              f"俯仰高頻抖動 = {res.get('pitch_std_deg')}°")
         for r in res["steps"]:
             print(f"  u={r['cmd']:+.3f}  τ={r.get('tau_s', float('nan')):.2f}s  增益={r.get('gain', float('nan')):.2f}"
                   f"  坡度={r['bank_mean_last5s_deg']:+.1f}°  高度誤差最大={r['agl_max_err_m']:.1f} m"
