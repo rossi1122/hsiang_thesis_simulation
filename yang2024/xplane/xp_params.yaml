@@ -17,7 +17,8 @@ camera:
   hfov_deg: 60.0
   crop_top: 30
   capture_height: 1010
-  head_pitch_bias_deg: 8.5   # 學長量到的 pilots_head_the 與真實光軸的固定偏差
+  head_pitch_bias_deg: 7.0   # pilots_head_the 與真實光軸的固定偏差。學長用 8.5°；2026-11-17 camera_check
+                             # 在 394 m 實測 YOLO 一律比預測低 43–49 px（≈ 1.5°），改為 7.0°
   head_psi_sign: -1          # pilots_head_psi 往右為正；本專案 pan 往左為正
 
 # ---------- 連線 ----------

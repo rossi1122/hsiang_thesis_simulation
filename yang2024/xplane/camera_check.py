@@ -32,11 +32,14 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--yolo-model", default=None)
     ap.add_argument("--no-reset", action="store_true")
+    ap.add_argument("--start", choices=("paper", "far"), default="paper",
+                    help="paper：吉普車後方 255 m（斜距約 394 m）；far：後方 900 m（斜距約 950 m）")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
 
     link, clock, params, xp, k = setup(dry_run=args.dry_run)
+    xp["scenario"]["start"] = args.start
     cam = XPCamera(xp["camera"])
     out = Path(args.out) if args.out else output_dir(xp, "camera_check")
     out.mkdir(parents=True, exist_ok=True)
@@ -51,8 +54,10 @@ def main(argv=None):
     clock.sleep(1.0)
     st = link.read()
     dist = math.dist(st.pos, st.jeep_pos)
+    back = 85.0 * k["k_L"] if args.start == "paper" else xp["scenario"]["far_distance"]
     print(f"[camera check] 飛機離地 {st.agl:.0f} m、和吉普車的直線距離 {dist:.0f} m（預期約 "
-          f"{params['H']:.0f} m 與 {math.hypot(params['H'], 85.0 * k['k_L']):.0f} m）")
+          f"{params['H']:.0f} m 與 {math.hypot(params['H'], back):.0f} m）"
+          f"，俯仰校正 {xp['camera']['head_pitch_bias_deg']}°")
     if not args.no_reset and st.agl < 0.5 * params["H"]:
         print("[camera check] ⚠️ 飛機沒有被移到空中，擺放可能沒生效；結果請截圖給我")
 
@@ -104,7 +109,15 @@ def main(argv=None):
         print(f"  pan {dp:+.0f}°, tilt {dt_:+.0f}° → 預測像素 ({px:7.1f}, {py:7.1f})"
               + (f"，YOLO ({row['yolo_px']:.1f}, {row['yolo_py']:.1f})，差 {row['err_px']:.1f} px"
                  if "yolo_px" in row else ""))
-    save_json(out / "summary.json", {"rows": rows, "f": cam.f, "cx": cam.cx, "cy": cam.cy})
+    errs_v = [r["yolo_py"] - r["pred_py"] for r in rows if "yolo_py" in r]
+    errs_u = [r["yolo_px"] - r["pred_px"] for r in rows if "yolo_px" in r]
+    if errs_v:
+        dv, du = float(np.mean(errs_v)), float(np.mean(errs_u))
+        print(f"[camera check] 平均差（YOLO − 預測）：水平 {du:+.1f} px、垂直 {dv:+.1f} px"
+              f"（垂直 {math.degrees(math.atan(dv / cam.f)):+.2f}°；正值 = YOLO 比預測低）")
+    save_json(out / "summary.json", {"rows": rows, "f": cam.f, "cx": cam.cx, "cy": cam.cy,
+                                     "start": args.start,
+                                     "head_pitch_bias_deg": xp["camera"]["head_pitch_bias_deg"]})
     print(f"[camera check] 截圖與結果在 {out}")
     return out, rows
 
