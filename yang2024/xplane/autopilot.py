@@ -21,7 +21,8 @@ class BankToTurnAutopilot:
         self.i_phi = 0.0
         self.i_h = 0.0
         self.i_v = 0.0
-        self.elev_prev = 0.0
+        self.elev_prev = gains.get("elev_trim", 0.0)
+        self.i_theta = 0.0
         self.last = {}
 
     def phi_command_deg(self, u_psi, V):
@@ -51,8 +52,13 @@ class BankToTurnAutopilot:
         # 俯仰角的變化率 θ̇ = Q·cosφ − R·sinφ（deg/s）。不能直接用機體 Q：坡度轉彎時 Q 有 ψ̇·sinφ 的固定分量
         phr = math.radians(st.roll_deg)
         theta_dot = st.Q * math.cos(phr) - st.R * math.sin(phr)
-        q_cmd = g["K_theta"] * (theta_cmd - st.pitch_deg)
-        elev_raw = float(np.clip(g["K_q"] * (q_cmd - theta_dot), -g["elev_limit"], g["elev_limit"]))
+        e_theta = theta_cmd - st.pitch_deg
+        self.i_theta = float(np.clip(self.i_theta + e_theta * dt, -60.0, 60.0))
+        q_cmd = g["K_theta"] * e_theta
+        # 配平 + 俯仰率迴路 + 俯仰角誤差積分：SP80 平飛本來就需要約 0.15 的升降舵，
+        # 只靠比例項時俯仰角要先差約 2.5° 才給得出來，飛機會一直往下掉（2026-11-17 第二次 step_test）
+        elev_raw = g["elev_trim"] + g["K_q"] * (q_cmd - theta_dot) + g["k_theta_i"] * self.i_theta
+        elev_raw = float(np.clip(elev_raw, -g["elev_limit"], g["elev_limit"]))
         # 同學長 inner_loop_controller：升降舵變化率限制 + 一階低通，避免全推全拉的高頻振盪
         step = g["elev_slew_per_s"] * dt
         elev_raw = float(np.clip(elev_raw, self.elev_prev - step, self.elev_prev + step))

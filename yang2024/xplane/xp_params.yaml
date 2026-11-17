@@ -58,6 +58,8 @@ autopilot:
   elev_limit: 1.0
   elev_slew_per_s: 2.5       # 升降舵每秒最多變化（50 Hz 時每圈 0.05；學長每圈 0.20）
   elev_lpf_tau_s: 0.08       # 升降舵輸出一階低通時間常數
+  elev_trim: 0.15            # 平飛配平（2026-11-17 第二次 step_test 量到平飛約 0.153）
+  k_theta_i: 0.01            # 俯仰角誤差積分（每 deg·s），消除穩態誤差
   # 空速 → 油門
   thr_trim: 0.45
   k_v: 0.08                  # 1 / (m/s)
