@@ -126,6 +126,7 @@ def main(argv=None):
     if not args.no_reset:
         link.place(st.x, st.y, st.z - st.agl + H, st.psi, V, throttle=xp["autopilot"]["thr_trim"])
         clock.sleep(2.0)
+        print(f"[擺放] 飛機離地 {link.read().agl:.0f} m（目標 {H:.0f} m）")
     print(f"[step test] 共 {T:.0f} s：先平飛 {segs[0][1]:.0f} s，再依序送 u_psi = {xp['step_test']['steps']}")
     rec = Recorder()
     tick = 1.0 / xp["loop"]["control_hz"]

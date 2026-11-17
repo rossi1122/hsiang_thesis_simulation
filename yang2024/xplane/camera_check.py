@@ -43,21 +43,31 @@ def main(argv=None):
 
     st = wait_for_jeep(link, clock)
     if not args.no_reset:
-        place_relative_to_jeep(link, st, xp, k, params["H"])  # 擺好後保持暫停
+        place_relative_to_jeep(link, st, xp, k, params["H"])
+        clock.sleep(1.0)
+        link.pause(False)   # X-Plane 暫停時可能不會套用新位置：放開 1 秒讓它生效
+        clock.sleep(1.0)
     link.pause(True)
-    clock.sleep(2.0)
+    clock.sleep(1.0)
+    st = link.read()
+    dist = math.dist(st.pos, st.jeep_pos)
+    print(f"[camera check] 飛機離地 {st.agl:.0f} m、和吉普車的直線距離 {dist:.0f} m（預期約 "
+          f"{params['H']:.0f} m 與 {math.hypot(params['H'], 85.0 * k['k_L']):.0f} m）")
+    if not args.no_reset and st.agl < 0.5 * params["H"]:
+        print("[camera check] ⚠️ 飛機沒有被移到空中，擺放可能沒生效；結果請截圖給我")
 
     grab = detector = None
     if not args.dry_run:
         import cv2
         import mss
-        sct = mss.mss()
+        sct = mss.MSS() if hasattr(mss, "MSS") else mss.mss()
         region = {"top": xp["camera"]["crop_top"], "left": 0,
                   "width": cam.width, "height": cam.height}
 
         def grab():
             return np.ascontiguousarray(np.array(sct.grab(region))[:, :, :3])
         if args.yolo_model:
+            print("[camera check] 載入 YOLO 模型……")
             from ultralytics import YOLO
             detector = YOLO(args.yolo_model)
 

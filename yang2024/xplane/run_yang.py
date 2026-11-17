@@ -174,6 +174,7 @@ def main(argv=None):
         place_relative_to_jeep(link, st, xp, k, H)
         clock.sleep(2.0)
         st = link.read()
+        print(f"[擺放] 飛機離地 {link.read().agl:.0f} m（目標 {H:.0f} m）")
     pan, tilt = geo.pointing_angles(st.jeep_pos, st.pos, st.psi,
                                     math.radians(st.pitch_deg), math.radians(st.roll_deg))
     tilt = float(np.clip(tilt, tilt_min, tilt_max))
