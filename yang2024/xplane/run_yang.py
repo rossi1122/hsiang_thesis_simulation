@@ -19,8 +19,18 @@
 """
 import argparse
 import math
+import sys
 from collections import deque
 from pathlib import Path
+
+# Windows：YOLO 模式要先載入 torch，再載入 casadi（mpc.py）。
+# 2026-11-17：casadi 先載入時，torch 會出現 WinError 127「找不到指定的程序 … fbgemm.dll」
+# （camera_check 沒有 casadi，所以同一個 YOLO 在那裡正常）。
+if "yolo" in sys.argv:
+    try:
+        import torch  # noqa: F401
+    except Exception as exc:  # noqa: BLE001 — 讓後面 start_yolo 再報完整錯誤
+        print(f"[YOLO] 預先載入 torch 失敗：{exc}")
 
 import numpy as np
 
