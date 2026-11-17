@@ -62,5 +62,6 @@ python -m yang2024.xplane.run_yang --controller switch --measure yolo --yolo-mod
 ```
 - 視窗會自動放到 X-Plane 以外的另一個螢幕（程式會印出偵測到的螢幕）；也可用 `--show-x`、`--show-y` 指定。只有一個螢幕時，YOLO 模式不開視窗、只錄影。
 - **YOLO 是截主螢幕**：視窗不能放在 X-Plane 那個螢幕上，否則 YOLO 會看到視窗。
-- `--record` 把畫面存成結果資料夾裡的 `overlay.mp4`（約 8 fps），可以直接放進簡報。
+- **每次執行都會自動錄影**，存成結果資料夾裡的 `overlay.mp4`（約 8 fps），可以直接放進簡報；單次不想錄加 `--no-record`，
+  全部關掉改 `xp_params.yaml` 的 `loop.record_overlay: false`。不加 `--show` 時只錄影、不開視窗。
 - 顯示在獨立執行緒，不影響 50 Hz 控制迴圈。

@@ -47,6 +47,7 @@ loop:
   max_time_s: 300
   min_agl_ratio: 0.33        # 離地高度 < 0.33·H 就暫停模擬（安全）
   log_dir: results/xplane    # 相對 repo 根目錄
+  record_overlay: true       # 每次 run_yang 都把顯示畫面錄成 overlay.mp4（--no-record 可單次關掉）
 
 # ---------- 內迴路（傾斜轉彎 + 定高 + 定速）；角度單位 deg，第一次飛要用 step_test 調 ----------
 autopilot:

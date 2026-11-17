@@ -226,7 +226,10 @@ def main(argv=None):
     ap.add_argument("--out", default=None, help="輸出資料夾（預設 results/xplane/<時間>_yang_...）")
     ap.add_argument("--show", action="store_true",
                     help="開即時顯示視窗（模式、R、YOLO 框、真值十字）。視窗要放在另一個螢幕，見 --show-x")
-    ap.add_argument("--record", action="store_true", help="把顯示畫面錄成結果資料夾裡的 overlay.mp4")
+    ap.add_argument("--record", action="store_true",
+                    help="（現在預設就會錄影，保留這個選項只為了相容舊指令）")
+    ap.add_argument("--no-record", action="store_true",
+                    help="這次不要錄影（預設每次都把顯示畫面錄成結果資料夾裡的 overlay.mp4）")
     ap.add_argument("--show-x", type=int, default=None,
                     help="顯示視窗左上角 x（預設自動：放在 X-Plane 以外的另一個螢幕）")
     ap.add_argument("--show-y", type=int, default=None)
@@ -301,7 +304,9 @@ def main(argv=None):
     print(f"[Yang X-Plane] 紀錄存到 {out}")
 
     overlay = status = None
-    if (args.show or args.record) and not args.dry_run:
+    # 預設每次都錄影（xp_params.yaml 的 loop.record_overlay），--no-record 可關掉
+    record = (args.record or xp["loop"].get("record_overlay", True)) and not args.no_record
+    if (args.show or record) and not args.dry_run:
         from .overlay import OverlayStatus, OverlayThread, pick_window_position, screen_grabber
         region = {"top": xp["camera"]["crop_top"], "left": 0, "width": cam.width, "height": cam.height}
         show = args.show
@@ -327,13 +332,13 @@ def main(argv=None):
         else:
             source = screen_grabber(region)
         overlay = OverlayThread(status, source, cam.cx, cam.cy, show=show,
-                                record_path=(out / "overlay.mp4") if args.record else None,
+                                record_path=(out / "overlay.mp4") if record else None,
                                 window_x=wx or 0, window_y=wy or 0)
         overlay.start()
         if show:
-            print(f"[overlay] 顯示{'＋錄影' if args.record else ''}已啟動，視窗位置 (x, y) = ({wx}, {wy})")
+            print(f"[overlay] 顯示{'＋錄影' if record else ''}已啟動，視窗位置 (x, y) = ({wx}, {wy})")
         else:
-            print("[overlay] 只錄影（不開視窗）")
+            print(f"[overlay] 只錄影（不開視窗），存到 {out / 'overlay.mp4'}")
 
     u_cmd, u_prev, U, switcher = params["u_psi_init"], params["u_psi_init"], None, None
     s1, s2_last = (0.0, 0.0), (0.0, 0.0)
