@@ -33,6 +33,21 @@ camera:
   head_pitch_bias_deg: 7.0   # pilots_head_the 與真實光軸的固定偏差。學長用 8.5°；2026-11-17 camera_check
                              # 在 394 m 實測 YOLO 一律比預測低 43–49 px（≈ 1.5°），改為 7.0°
   head_psi_sign: -1          # pilots_head_psi 往右為正；本專案 pan 往左為正
+  head_phi_sign: 1           # pilots_head_phi（頭部滾轉，增穩雲台才會用到）的正負號；用 camera_check --roll 30 確認
+
+# ---------- 改良版（2026-11-18）：增穩雲台 + 目標跟丟處理 ----------
+# run_yang、camera_check 預設用改良版；加 --yang-original 回到 Yang 2024 原版
+# （兩軸機身雲台、Eq. 9 像素律、跟丟時沿用舊值）。之前的 A–E2、YOLO 版 A 都是原版。
+gimbal:
+  mode: follow               # follow = SIYI A8 mini「跟隨模式」：三軸增穩，航向跟著飛機、俯仰與滾轉對地平線穩定
+                             # body   = Yang 原版：兩軸、角度相對機身、沒有增穩
+  # SIYI A8 mini 官方規格（User Manual, Technical Specification）：機構關節 yaw → roll → pitch
+  yaw_limit_deg: 160.0       # 水平 ±160°
+  pitch_limit_deg: [-135.0, 45.0]   # 俯仰 −135°～+45°（−90° 是垂直朝下，可以再往後翻 45°）
+  roll_limit_deg: 30.0       # 滾轉 ±30°（看正前方時，飛機坡度超過 30° 的部分會漏到畫面上）
+lost_target:
+  enabled: true              # 偵測不到時：用 Eq. 10 + 實測航向變化率推算 s2，雲台對準推算的方向（不做定位）
+  truth_fov_check: true      # truth 模式下目標超出畫面也算偵測不到（和真實相機一致）
 
 # ---------- 連線 ----------
 link:

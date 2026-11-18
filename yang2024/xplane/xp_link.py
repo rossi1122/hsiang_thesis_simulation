@@ -127,6 +127,14 @@ class XPLink:
         self.c.sendDREFs(["sim/graphics/view/pilots_head_psi", "sim/graphics/view/pilots_head_the"],
                          [head_psi, head_the])
 
+    def gimbal_head(self, yaw, pitch_up, roll):
+        """增穩雲台用：直接送頭部偏航、俯仰（往上為正）、滾轉（rad，geometry.head_angles_from_rows 的結果）。"""
+        head_psi = self.cam["head_psi_sign"] * math.degrees(yaw)
+        head_the = math.degrees(pitch_up) + self.cam["head_pitch_bias_deg"]
+        head_phi = self.cam.get("head_phi_sign", 1) * math.degrees(roll)
+        self.c.sendDREFs(["sim/graphics/view/pilots_head_psi", "sim/graphics/view/pilots_head_the",
+                          "sim/graphics/view/pilots_head_phi"], [head_psi, head_the, head_phi])
+
     def pause(self, yes=True):
         self.c.pauseSim(bool(yes))
 
@@ -136,8 +144,10 @@ class XPLink:
         except Exception:  # noqa: BLE001 — 只是顯示用
             pass
 
-    def place(self, x, y, z, psi, speed, throttle=0.45):
-        """把飛機放到世界座標 (x, y, z)、航向 psi、空速 speed，並暫停（照學長 reset() 的步驟）。"""
+    def place(self, x, y, z, psi, speed, throttle=0.45, roll_deg=0.0):
+        """把飛機放到世界座標 (x, y, z)、航向 psi、空速 speed，並暫停（照學長 reset() 的步驟）。
+
+        roll_deg：擺放時的坡度（只有 camera_check --roll 會用到，檢查增穩雲台）。"""
         c = self.c
         c.pauseSim(True)
         c.sendDREF("sim/operation/override/override_joystick", 1)
@@ -148,7 +158,7 @@ class XPLink:
                 "true_airspeed", "M", "N", "L", "P", "Q", "R", "P_dot", "Q_dot", "R_dot"]
         c.sendDREFs([POS + n for n in zero], [0.0] * len(zero))
         lx, ly, lz = world_to_local(x, y, z)
-        c.sendDREFs([POS + "phi", POS + "theta", POS + "psi"], [0.0, 2.0, psi_to_heading(psi)])
+        c.sendDREFs([POS + "phi", POS + "theta", POS + "psi"], [float(roll_deg), 2.0, psi_to_heading(psi)])
         c.sendDREFs([POS + "local_x", POS + "local_y", POS + "local_z"], [lx, ly, lz])
         c.sendDREFs(["sim/operation/fix_all_systems"], [1])
         c.sendDREF("sim/flightmodel/engine/ENGN_mixt", 0.61)
@@ -161,7 +171,7 @@ class XPLink:
                      "sim/graphics/view/pilots_head_z"], [0.0, 0.0, 0.0])
 
 
-def place_relative_to_jeep(link, st, xp, k, H, jeep_shift=(0.0, 0.0)):
+def place_relative_to_jeep(link, st, xp, k, H, jeep_shift=(0.0, 0.0), roll_deg=0.0):
     """依 scenario 把飛機放在吉普車附近（吉普車座標：x 沿前進方向、y 往左）。回傳 (x, y, z, psi)。
 
     jeep_shift：吉普車在飛機擺好、暫停等待的這段時間會再開走的位移（世界座標），
@@ -177,5 +187,5 @@ def place_relative_to_jeep(link, st, xp, k, H, jeep_shift=(0.0, 0.0)):
     y = st.jy + jeep_shift[1] + s * dx + c * dy
     z = st.jz + H
     psi = st.jpsi + dpsi
-    link.place(x, y, z, psi, xp["scaling"]["V_t"], throttle=xp["autopilot"]["thr_trim"])
+    link.place(x, y, z, psi, xp["scaling"]["V_t"], throttle=xp["autopilot"]["thr_trim"], roll_deg=roll_deg)
     return x, y, z, psi

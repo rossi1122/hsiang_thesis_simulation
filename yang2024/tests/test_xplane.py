@@ -249,7 +249,7 @@ def test_run_yang_yolo_path_with_fake_detector(tmp_path, monkeypatch, sees):
 def test_pose_history_rejects_stale():
     from yang2024.xplane.run_yang import PoseHistory
     p = PoseHistory()
-    p.add(10.0, 0.1, -0.5, 0.0, 0.0)
+    p.add(10.0, np.eye(3), 0.0)
     assert p.at(10.1) is not None and p.at(5.0) is None
 
 
@@ -274,3 +274,43 @@ def test_pick_window_position():
     right = {"left": 1920, "top": 200, "width": 1920, "height": 1080}
     assert pick_window_position(region, [full, main, right])[0] == (1940, 240)
     assert pick_window_position(region, [main, main])[0] is None   # 只有一個螢幕
+
+
+def _run_with_dropout(tmp_path, monkeypatch, extra_args, window=(30.0, 34.0)):
+    """truth 模式，強制在 window 秒內「看不到目標」（模擬漏偵測），回傳 log。"""
+    import pandas as pd
+    from yang2024.xplane import run_yang as ry
+    from yang2024.xplane.camera import XPCamera
+    ref = {}
+    orig_setup = ry.setup
+
+    def setup_spy(*a, **k):
+        out = orig_setup(*a, **k)
+        ref["clock"] = out[1]
+        return out
+    monkeypatch.setattr(ry, "setup", setup_spy)
+    orig_in = XPCamera.in_image
+
+    def in_image(self, u, v):
+        t = ref["clock"].now() - ref.setdefault("t0", ref["clock"].now())
+        if window[0] <= t - ref.get("offset", 0.0) <= window[1]:
+            return False
+        return orig_in(self, u, v)
+    monkeypatch.setattr(XPCamera, "in_image", in_image)
+    out = ry.main(["--dry-run", "--time", "45", "--no-record", "--out", str(tmp_path)] + extra_args)
+    return pd.read_csv(out / "log.csv")
+
+
+def test_enhanced_dropout_prediction_keeps_target_in_view(tmp_path, monkeypatch):
+    """改良版：4 s 看不到目標時用 Eq. 10 推算，雲台跟著推算的方向 → 真實目標仍留在畫面內，結束後立刻重新抓到。"""
+    log = _run_with_dropout(tmp_path, monkeypatch, [])
+    t = log.t - log.t.iloc[0]
+    mp = log[log.mpc_tick == 1]
+    tm = mp.t - log.t.iloc[0]
+    lost = mp[mp.meas_valid == 0]
+    assert len(lost) > 20 and (lost.predicted == 1).all()            # 跟丟期間一直在推算
+    inside = (log.u1_truth.abs() < 960) & (log.v1_truth.abs() < 505)
+    assert inside.mean() > 0.99                                         # 真實目標幾乎全程在畫面內
+    after = mp[tm > tm[mp.meas_valid == 0].max()]
+    assert (after.meas_valid == 1).all()                                # 之後立刻重新抓到
+    assert log.gimbal_sat.mean() < 0.05

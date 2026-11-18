@@ -65,3 +65,18 @@ python -m yang2024.xplane.run_yang --controller switch --measure yolo --yolo-mod
 - **每次執行都會自動錄影**，存成結果資料夾裡的 `overlay.mp4`（約 8 fps），可以直接放進簡報；單次不想錄加 `--no-record`，
   全部關掉改 `xp_params.yaml` 的 `loop.record_overlay: false`。不加 `--show` 時只錄影、不開視窗。
 - 顯示在獨立執行緒，不影響 50 Hz 控制迴圈。
+
+## 改良版（預設）與 Yang 原版（`--yang-original`）— 2026-11-18
+| | Yang 原版（`--yang-original`） | 改良版（預設） |
+|---|---|---|
+| 雲台 | 兩軸、角度相對機身、沒有增穩；tilt −88.8°～+9.7° | **SIYI A8 mini 跟隨模式**：三軸增穩，航向跟著飛機、俯仰與滾轉對地平線穩定；機構 yaw ±160°、pitch −135°～+45°、roll ±30° |
+| 雲台律 | Eq. 9：每個 MPC 週期依像素誤差轉 λ = 0.5 | 同樣的比例律，但在「世界座標的視線方向」上做：飛機轉彎自動抵消、用影像擷取當下的相機姿態 |
+| 偵測不到時 | 沿用上一筆像素，配上目前姿態（雲台會用舊誤差一直轉） | 用 Eq. 10（Yang 的預測模型）+ 實測航向變化率推算 s₂，雲台對準推算的方向；重新偵測到立刻回到量測 |
+| truth 模式 | 目標出畫面仍當作看得到 | 目標出畫面就當作看不到（和真實相機一致） |
+| MPC、切換、Eq. 8 | 不變 | 不變 |
+- 之前的 A–E2、YOLO 版 A 都是原版。原版的程式路徑和改版前逐點相同（假 X-Plane 比對，差 < 1e-11）。
+- 跟丟時只用影像與已知的自身運動，深度只當增益（H / sin），**不做目標定位**。
+- 結果資料夾名稱：改良版會多 `_enh`；summary 多記錄 `setup`、`gimbal_mode`、`meas_valid_ratio`、`predicted_ratio`、
+  `lost_max_s`、`gimbal_sat_ratio`、`cam_roll_max_deg`。
+- 顯示視窗：黃色 X = 跟丟時推算的目標位置；左上多一行雲台狀態（SATURATED = 有關節碰到極限）。
+- 第一次用改良版前，先跑 `camera_check --roll 30` 與 `camera_check --roll -46`，確認 X-Plane 頭部滾轉的方向（見 camera_check 說明）。

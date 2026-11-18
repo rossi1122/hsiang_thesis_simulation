@@ -46,6 +46,12 @@ def draw(frame, s, cx, cy, out_size=(1280, 672)):
         if 0 <= p[0] < w and 0 <= p[1] < h:
             cv2.circle(img, p, 25, (0, 255, 0), 2)
             cv2.drawMarker(img, p, (0, 255, 0), cv2.MARKER_CROSS, 40, 2)
+    # 跟丟時推算的目標位置（黃色）
+    pred = s.get("pred_uv")
+    if pred is not None and np.all(np.isfinite(pred)):
+        q = (int(round(cx + pred[0])), int(round(cy + pred[1])))
+        if 0 <= q[0] < w and 0 <= q[1] < h:
+            cv2.drawMarker(img, q, (0, 255, 255), cv2.MARKER_TILTED_CROSS, 40, 3)
     # YOLO 偵測框
     bbox = s.get("bbox")
     if bbox is not None:
@@ -63,13 +69,14 @@ def draw(frame, s, cx, cy, out_size=(1280, 672)):
         (f"u_psi = {s.get('u_cmd', 0):+.3f} rad/s   roll = {s.get('roll', 0):+5.1f} deg", (255, 255, 255), 0.9),
         (f"s2 = ({s.get('u2', np.nan):+6.0f}, {s.get('v2', np.nan):+6.0f}) px", (255, 255, 255), 0.9),
         (s.get("vision_text", "measure: truth"), (0, 200, 255), 0.9),
+        (s.get("gimbal_text", ""), (200, 200, 200), 0.8),
     ]
     y = 45
     for text, col, scale in lines:
         cv2.putText(img, text, (15, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 5)
         cv2.putText(img, text, (15, y), cv2.FONT_HERSHEY_SIMPLEX, scale, col, 2)
         y += int(42 * scale) + 10
-    cv2.putText(img, "green = truth projection   red = YOLO", (15, h - 20),
+    cv2.putText(img, "green = truth projection   red = YOLO   yellow X = predicted (target lost)", (15, h - 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
     return cv2.resize(img, out_size)
 

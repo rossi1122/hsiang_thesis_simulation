@@ -91,6 +91,96 @@ def ideal_and_down(u1, v1, pan, tilt, alpha, f, pitch=0.0, roll=0.0, min_cos=0.0
     return u2, v2, f * r3[0] / r3[2], f * r3[1] / r3[2], bool(valid)
 
 
+# ---------------------------------------------------------------------------
+# 一般化的相機姿態（2026-11-18，增穩雲台用）
+# 相機姿態用 3×3「相機列」矩陣 C 表示：三列依序是 x_c（影像右）、y_c（影像下）、z_c（光軸）。
+#   C_body：在機體座標；C_H：在「水平航向座標」H（x = 機頭方向的水平投影、y 左、z 上，也就是世界座標轉掉 ψ）。
+#   Ideal State（Eq. 7）就是在 H 座標裡定義的虛擬相機，所以量測換算只需要 C_H。
+# 原本的 camera_rows(pan, tilt) 是「兩軸、相對機身」的特例：C_body = camera_rows(pan, tilt)。
+# ---------------------------------------------------------------------------
+M0 = np.array([[0.0, -1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]])  # 所有角度為 0 時的相機列（機體座標）
+
+
+def level_from_body(pitch, roll):
+    """機體座標 → 水平航向座標 H 的旋轉（只去掉俯仰、滾轉）。"""
+    return rot_y(-pitch) @ rot_x(roll)
+
+
+def rows_body_to_level(C_body, pitch, roll):
+    return C_body @ level_from_body(pitch, roll).T
+
+
+def rows_level_to_body(C_H, pitch, roll):
+    return C_H @ level_from_body(pitch, roll)
+
+
+def rows_from_joints(yaw, roll, pitch_up):
+    """雲台關節（底座往外：yaw 繞機體 z → roll 繞 x → pitch 繞 y）→ 機體座標相機列。
+
+    pitch_up 往上為正（SIYI 的慣例，−90° = 垂直朝下）；roll 往右為正。
+    roll = 0 時等於 camera_rows(yaw, pitch_up)。
+    """
+    J = rot_z(yaw) @ rot_x(roll) @ rot_y(-pitch_up)
+    return M0 @ J.T
+
+
+def joints_from_rows(C_body):
+    """rows_from_joints 的反函數（ZXY 分解，取 |roll| ≤ 90° 的那一組）。回傳 (yaw, roll, pitch_up)。"""
+    J = C_body.T @ M0
+    roll = float(np.arcsin(np.clip(J[2, 1], -1.0, 1.0)))
+    yaw = float(np.arctan2(-J[0, 1], J[1, 1]))
+    pitch_down = float(np.arctan2(-J[2, 0], J[2, 2]))
+    return yaw, roll, -pitch_down
+
+
+def head_angles_from_rows(C_body):
+    """機體座標相機列 → X-Plane 頭部視角 (偏航, 俯仰往上為正, 滾轉)，ZYX 順序（先偏航、再俯仰、最後繞視線滾轉）。
+
+    兩軸機身雲台時剛好是 (pan, tilt, 0)，和原本送給 X-Plane 的值相同。
+    """
+    R = C_body.T @ M0
+    pitch_down = float(np.arcsin(np.clip(-R[2, 0], -1.0, 1.0)))
+    roll = float(np.arctan2(R[2, 1], R[2, 2]))
+    yaw = float(np.arctan2(R[1, 0], R[0, 0]))
+    return yaw, -pitch_down, roll
+
+
+def ray_level_from_pixel(u1, v1, C_H, f):
+    """像素 → 水平航向座標 H 中的射線方向（未正規化）。"""
+    return C_H.T @ np.array([u1, v1, f], float)
+
+
+def ideal_and_down_from_ray(ray_level, alpha, f, min_cos=0.01):
+    """H 座標射線 → Ideal State (u2, v2)、垂直相機 (u3, v3)、valid（同 ideal_and_down）。"""
+    r2 = camera_rows(-np.pi / 2, -alpha) @ ray_level
+    r3 = camera_rows(-np.pi / 2, -np.pi / 2) @ ray_level
+    valid = r2[2] > min_cos * np.linalg.norm(r2)
+    u2 = f * r2[0] / r2[2] if valid else np.nan
+    v2 = f * r2[1] / r2[2] if valid else np.nan
+    return u2, v2, f * r3[0] / r3[2], f * r3[1] / r3[2], bool(valid)
+
+
+def ideal_ray_level(u2, v2, f, alpha):
+    """Ideal State 特徵 → H 座標射線（ideal_and_down_from_ray 的反方向，用於跟丟時把推算的 s2 變回視線）。"""
+    return camera_rows(-np.pi / 2, -alpha).T @ np.array([u2, v2, f], float)
+
+
+def project_rows(target, uav, psi, C_H, f):
+    """目標世界座標 → 用相機列 C_H 投影的 (u, v, 深度)。"""
+    rel = np.asarray(target, float) - np.asarray(uav, float)
+    cam = C_H @ (rot_z(psi).T @ rel)
+    return f * cam[0] / cam[2], f * cam[1] / cam[2], cam[2]
+
+
+def los_angles(vec):
+    """向量 → (方位角, 仰角)；方位從 +x 逆時針、仰角往下為負。"""
+    return float(np.arctan2(vec[1], vec[0])), float(np.arctan2(vec[2], np.hypot(vec[0], vec[1])))
+
+
+def wrap(a):
+    return float(np.arctan2(np.sin(a), np.cos(a)))
+
+
 def ideal_to_down(u2, v2, alpha, f):
     """Eq. 15 / Eq. 54：Ideal State (u2, v2) → 垂直朝下虛擬相機 (u3, v3)。"""
     den = v2 * np.cos(alpha) + f * np.sin(alpha)

@@ -10,12 +10,20 @@
 每一圈（control_hz，預設 50 Hz）：
   傾斜轉彎內迴路把 u_psi 變成副翼、方向舵、升降舵、油門；雲台角度依真實經過時間積分後送出。
 
+兩種設定（2026-11-18）：
+  改良版（預設）：SIYI A8 mini 跟隨模式的三軸增穩雲台（xp_params.yaml 的 gimbal）+ 目標跟丟處理（lost_target）：
+      - 雲台在「世界座標」追視線方向：量到目標時用 Eq. 9 的比例律（λ = 0.5）把視線拉過去，飛機轉彎自動抵消；
+      - 偵測不到時用 Eq. 10（Yang 自己的預測模型）+ 實測航向變化率推算 s2，雲台對準推算的方向，MPC 用推算的 s2；
+        只用影像與自身運動，深度只當增益（H / sin），不做目標定位。
+  --yang-original：Yang 2024 原版（兩軸機身雲台、Eq. 9 像素律、偵測不到時沿用舊值）。A–E2 與 YOLO 版 A 都是原版。
+
 用法（飛機 PC，repo 根目錄，dive_sim 環境）：
     python -m yang2024.xplane.run_yang                       # 切換式 MPC、真值特徵、論文起始位置
     python -m yang2024.xplane.run_yang --controller lsm
     python -m yang2024.xplane.run_yang --start far           # 從吉普車後方 900 m 起始
     python -m yang2024.xplane.run_yang --measure yolo --yolo-model <best.pt 路徑>
     python -m yang2024.xplane.run_yang --dry-run --time 30   # 不開 X-Plane，用假的 X-Plane 測試程式
+    python -m yang2024.xplane.run_yang --yang-original       # Yang 2024 原版（重現用）
 """
 import argparse
 import math
@@ -36,6 +44,7 @@ import numpy as np
 
 from .. import geometry as geo
 from ..baselines import lsm_u_psi
+from ..gimbal_model import GimbalModel
 from ..mpc import Switcher, YangMPC
 from .autopilot import BankToTurnAutopilot
 from .camera import XPCamera
@@ -44,13 +53,15 @@ from .xp_link import import_senior, place_relative_to_jeep
 
 
 class PoseHistory:
-    """YOLO 結果有延遲：用影像擷取當下的姿態、雲台角度做 Ideal State 轉換（避免把自身運動誤當成目標運動）。"""
+    """YOLO 結果有延遲：用影像擷取當下的相機姿態做 Ideal State 轉換（避免把自身運動誤當成目標運動）。
+
+    每一筆存 (時間, C_H = 相機列在水平航向座標, ψ)。"""
 
     def __init__(self, maxlen=200):
         self.buf = deque(maxlen=maxlen)
 
-    def add(self, t, pan, tilt, pitch, roll):
-        self.buf.append((t, pan, tilt, pitch, roll))
+    def add(self, t, C_H, psi):
+        self.buf.append((t, C_H, psi))
 
     def at(self, t, max_gap=0.3):
         if not self.buf:
@@ -123,7 +134,34 @@ def summarize(rec, params, k, dt_mpc):
         "roll_max_deg": float(np.nanmax(np.abs(rec.column("roll")))),
         "yolo_detect_ratio": float(np.nanmean(rec.column("detected")[mpc])),
         **yolo_stats(rec, mpc),
+        **tracking_stats(rec, mpc),
         "scale": k,
+    }
+
+
+def tracking_stats(rec, mpc):
+    """量測有效比例、推算比例、最長連續跟丟、雲台關節碰到極限比例、最大影像傾斜。"""
+    t = rec.column("t")
+    valid = rec.column("meas_valid")[mpc]
+    pred = rec.column("predicted")[mpc]
+    lost = rec.column("lost_s")
+    sat = rec.column("gimbal_sat")
+    cam_roll = rec.column("cam_roll")
+    episodes = 0
+    if lost.size:
+        was = False
+        for x in lost:
+            now_lost = x > 0.5
+            if now_lost and not was:
+                episodes += 1
+            was = now_lost
+    return {
+        "meas_valid_ratio": float(np.nanmean(valid)) if valid.size else None,
+        "predicted_ratio": float(np.nanmean(pred)) if pred.size else None,
+        "lost_max_s": float(np.nanmax(lost)) if lost.size else None,
+        "lost_episodes_over_0p5s": int(episodes),
+        "gimbal_sat_ratio": float(np.nanmean(sat)) if sat.size else None,
+        "cam_roll_max_deg": float(np.nanmax(np.abs(cam_roll))) if cam_roll.size else None,
     }
 
 
@@ -233,6 +271,8 @@ def main(argv=None):
     ap.add_argument("--show-x", type=int, default=None,
                     help="顯示視窗左上角 x（預設自動：放在 X-Plane 以外的另一個螢幕）")
     ap.add_argument("--show-y", type=int, default=None)
+    ap.add_argument("--yang-original", action="store_true",
+                    help="Yang 2024 原版（兩軸機身雲台、Eq. 9 像素律、偵測不到時沿用舊值）。預設是改良版（增穩雲台 + 跟丟處理）")
     ap.add_argument("--vc", type=float, default=None,
                     help="論文尺度的目標速度 V_c（論文用 5、7、9；預設 7）。吉普車實際速度 = V_c × k_V，例如 9 → 16.9 m/s")
     add_profile_arg(ap)
@@ -255,11 +295,48 @@ def main(argv=None):
     tilt_min, tilt_max = params["gimbal_tilt_range"]
     rate_max = params["gimbal_rate_max"]
 
+    # ---------------- 原版 / 改良版
+    enhanced = not args.yang_original
+    gimbal = GimbalModel.from_config(xp.get("gimbal", {}), params, mode=None if enhanced else "body")
+    follow = gimbal.mode == "follow"
+    lost_cfg = xp.get("lost_target", {})
+    lost_handling = enhanced and lost_cfg.get("enabled", True)
+    fov_check = enhanced and lost_cfg.get("truth_fov_check", True)
+    print(f"[設定] {'改良版' if enhanced else 'Yang 2024 原版'}：雲台 {gimbal.mode}"
+          f"{'（SIYI A8 mini 跟隨模式，三軸增穩）' if follow else '（兩軸、相對機身）'}、"
+          f"跟丟處理 {'開' if lost_handling else '關'}")
+
     print(f"[Yang X-Plane] V = {V} m/s、H = {H} m、R_d = {params['R_d']:.0f} m、R_M = {params['R_M']:.0f} m、"
           f"u_max = {params['u_max']:.4f} rad/s、Δt = {dt_mpc:.3f} s、f = {f:.1f} px")
     v_jeep = jeep_speed_target(xp, k)
     print(f"[Yang X-Plane] 吉普車速度應為 {xp['scenario']['jeep_speed_paper']} × {k['k_V']:.3f} = "
           f"{v_jeep:.1f} m/s（jeep_controller.py --speed）")
+
+    def depth_of(v2):
+        if params["depth_model"] == "const":
+            return params["depth_const"]
+        return geo.ideal_depth(v2, alpha, f, H)
+
+    # ---------------- 雲台狀態
+    # body  ：g = (pan, tilt)，相對機身（原版）
+    # follow：g = (視線方位 az_w, 仰角 el)，在世界座標；送出時 pan = az_w − ψ（跟隨模式：相對機頭的水平方向）
+    g = [0.0, 0.0]
+    C_body_cmd = geo.camera_rows(0.0, 0.0)      # 目前送給 X-Plane 的相機姿態（相對機身）
+
+    def command_gimbal(st_now):
+        """把雲台狀態換成相機姿態、送給 X-Plane。回傳 (指令 pan, 指令 tilt, info)。"""
+        nonlocal C_body_cmd
+        pitch_r, roll_r = math.radians(st_now.pitch_deg), math.radians(st_now.roll_deg)
+        if follow:
+            pan_c, tilt_c = geo.wrap(g[0] - st_now.psi), g[1]
+        else:
+            pan_c, tilt_c = g[0], g[1]
+        _, C_body_cmd, info = gimbal.rows(pan_c, tilt_c, pitch_r, roll_r)
+        if follow:
+            link.gimbal_head(*gimbal.head_angles(C_body_cmd))
+        else:
+            link.gimbal(pan_c, info["joints"][2])
+        return pan_c, tilt_c, info
 
     vision = None
     if args.measure == "yolo":
@@ -282,11 +359,14 @@ def main(argv=None):
         return link.read()
 
     def point_gimbal(st_now):
-        p, t_ = geo.pointing_angles(st_now.jeep_pos, st_now.pos, st_now.psi,
-                                    math.radians(st_now.pitch_deg), math.radians(st_now.roll_deg))
-        t_ = float(np.clip(t_, tilt_min, tilt_max))
-        link.gimbal(p, t_)
-        return p, t_
+        """起始時用真值對準吉普車一次（只用在初始化，之後只靠影像）。"""
+        if follow:
+            g[0], g[1] = geo.los_angles(np.asarray(st_now.jeep_pos) - np.asarray(st_now.pos))
+        else:
+            p, t_ = geo.pointing_angles(st_now.jeep_pos, st_now.pos, st_now.psi,
+                                        math.radians(st_now.pitch_deg), math.radians(st_now.roll_deg))
+            g[0], g[1] = p, float(np.clip(t_, tilt_min, tilt_max))
+        return command_gimbal(st_now)
 
     if not args.no_reset:
         clock.sleep(1.0)
@@ -298,7 +378,7 @@ def main(argv=None):
             print(f"[擺放] ⚠️ 吉普車比 {v_jeep:.1f} m/s 快很多：筆電的 jeep_controller.py --speed 可能打錯")
         st = place(st2)
         print(f"[擺放] 飛機離地 {st.agl:.0f} m（目標 {H:.0f} m）")
-    pan, tilt = point_gimbal(st)
+    pan, tilt, ginfo = point_gimbal(st)
     if vision is not None:
         t_wait = clock.now()
         clock.sleep(0.2)                     # 讓 X-Plane 先畫出雲台轉好的畫面
@@ -309,7 +389,7 @@ def main(argv=None):
             # （2026-11-17 YOLO 版 A：等了約 0.5 s，起始 258 m 而不是 255 m；遠距離可能要等到 8 s ≈ 150 m）
             print(f"[擺放] 等 YOLO 用了 {extra:.1f} s，吉普車又開了約 {v_jeep * extra:.0f} m → 重新擺放")
             st = place(link.read())
-            pan, tilt = point_gimbal(st)
+            pan, tilt, ginfo = point_gimbal(st)
         frames0 = vision[1].frame_count
     poses = PoseHistory()
     rec = Recorder()
@@ -318,7 +398,7 @@ def main(argv=None):
         out.mkdir(parents=True, exist_ok=True)
     else:
         out = output_dir(xp, f"yang_{args.controller}_{args.measure}_{xp['scenario']['start']}"
-                             f"_vc{xp['scenario']['jeep_speed_paper']:g}")
+                             f"_vc{xp['scenario']['jeep_speed_paper']:g}{'_enh' if enhanced else ''}")
     print(f"[Yang X-Plane] 紀錄存到 {out}")
 
     overlay = status = None
@@ -364,9 +444,13 @@ def main(argv=None):
     mode, n1, solve_ms, detected = "-", -1, np.nan, 0.0
     yolo_ts = float("nan")
     u2 = v2 = u3 = v3 = g1 = np.nan
+    meas_valid, predicted = 0, 0
     t0 = clock.now()
     next_mpc = t0
     last_tick = t0
+    last_mpc_t = t0
+    last_meas_t = t0                 # 最後一次有效量測的時間（跟丟計時）
+    last_meas_ts = -1.0              # 最後用過的 YOLO 影像時間戳（同一張不重複用）
     tick = 1.0 / xp["loop"]["control_hz"]
     min_agl = xp["loop"]["min_agl_ratio"] * H
     link.pause(False)
@@ -387,17 +471,26 @@ def main(argv=None):
                 clock.sleep(tick - (clock.now() - now))
                 continue
             pitch, roll = math.radians(st.pitch_deg), math.radians(st.roll_deg)
-            poses.add(now, pan, tilt, pitch, roll)
-            ut1, vt1, depth = cam.project_truth(st, pan, tilt) if st.jeep_ok else (np.nan, np.nan, -1)
+            # 這一刻 X-Plane 實際的相機姿態 = 上一圈送出的頭部角度（相對機身）× 這一刻的飛機姿態
+            C_H = geo.rows_body_to_level(C_body_cmd, pitch, roll)
+            poses.add(now, C_H, st.psi)
+            if st.jeep_ok:
+                ut1, vt1, depth = geo.project_rows(st.jeep_pos, st.pos, st.psi, C_H, f)
+            else:
+                ut1, vt1, depth = np.nan, np.nan, -1.0
 
             mpc_tick = now >= next_mpc
             if mpc_tick:
                 next_mpc = max(next_mpc + dt_mpc, now + 0.5 * dt_mpc)
-                pose = (pan, tilt, pitch, roll)
+                dt_m = now - last_mpc_t
+                last_mpc_t = now
+                # ---------- 1. 量測
+                meas, C_cap, psi_cap = None, C_H, st.psi
                 if args.measure == "truth":
-                    if depth > 0:
-                        s1 = (ut1, vt1)
-                    detected = float(depth > 0)
+                    ok_meas = depth > 0 and (not fov_check or cam.in_image(ut1, vt1))
+                    if ok_meas:
+                        meas = (ut1, vt1)
+                    detected = float(ok_meas)
                     yolo_ts = float("nan")
                 else:
                     detector, shared, _ = vision
@@ -405,18 +498,51 @@ def main(argv=None):
                     res, _ = shared.get_latest()
                     detected = float(bool(res.detected))
                     yolo_ts = float(res.timestamp) if res.timestamp else float("nan")
-                    if res.detected:
-                        s1 = cam.to_centered(res.raw_center_x, res.raw_center_y)
+                    fresh = (not lost_handling) or res.timestamp > last_meas_ts
+                    if res.detected and fresh:
                         hist = poses.at(res.timestamp)
                         if hist is not None:
-                            pose = hist[1:]
-                u2, v2, u3, v3, ok = geo.ideal_and_down(s1[0], s1[1], *pose[:2], alpha, f,
-                                                        pitch=pose[2], roll=pose[3])
-                if ok:
-                    s2_last = (u2, v2)
-                u2, v2 = s2_last
+                            C_cap, psi_cap = hist[1], hist[2]
+                        meas = cam.to_centered(res.raw_center_x, res.raw_center_y)
+                        last_meas_ts = res.timestamp
+                los_w = None
+                if meas is not None:
+                    # ---------- 2a. 有量測：換成 Ideal State（Eq. 7、15）
+                    s1 = meas
+                    ray = geo.ray_level_from_pixel(s1[0], s1[1], C_cap, f)
+                    u2, v2, u3, v3, ok = geo.ideal_and_down_from_ray(ray, alpha, f)
+                    if ok:
+                        s2_last = (u2, v2)
+                    u2, v2 = s2_last
+                    los_w = geo.rot_z(psi_cap) @ ray
+                    last_meas_t = now
+                    meas_valid, predicted = 1, 0
+                elif lost_handling:
+                    # ---------- 2b. 偵測不到（改良版）：用 Eq. 10 + 實測航向變化率推算 s2（已知的自身運動，不做定位）
+                    u2p, v2p = s2_last
+                    z = depth_of(v2p)
+                    if np.isfinite(z) and z > 0:
+                        du, dv = geo.image_model(u2p, v2p, st.psi_rate, V, alpha, f, z)
+                        s2_last = (u2p + du * dt_m, v2p + dv * dt_m)
+                    u2, v2 = s2_last
+                    if v2 * math.cos(alpha) + f * math.sin(alpha) > 1e-6:
+                        u3, v3 = geo.ideal_to_down(u2, v2, alpha, f)
+                    ray = geo.ideal_ray_level(u2, v2, f, alpha)
+                    los_w = geo.rot_z(st.psi) @ ray
+                    c = C_H @ ray                         # 推算的目標在目前畫面上的位置（只供顯示、原版雲台律用）
+                    s1 = (f * c[0] / c[2], f * c[1] / c[2]) if c[2] > 1e-6 else (np.nan, np.nan)
+                    meas_valid, predicted = 0, 1
+                else:
+                    # ---------- 2c. 偵測不到（原版）：沿用上一筆 s1，配上目前的相機姿態
+                    ray = geo.ray_level_from_pixel(s1[0], s1[1], C_H, f)
+                    u2, v2, u3, v3, ok = geo.ideal_and_down_from_ray(ray, alpha, f)
+                    if ok:
+                        s2_last = (u2, v2)
+                    u2, v2 = s2_last
+                    meas_valid, predicted = 0, 0
                 g1 = geo.perception_g(u3, v3, f, params["R_M"], H)
 
+                # ---------- 3. 控制器（和數值模擬同一份）
                 if args.controller == "lsm":
                     u_cmd = lsm_u_psi(u2, v2, V, alpha, f, params)
                     mode = "LSM"
@@ -433,29 +559,56 @@ def main(argv=None):
                     U, info = mpc.solve(mode, u2, v2, u_prev, U0)
                     u_cmd, solve_ms = float(U[0]), info["time"] * 1e3
                 u_prev = u_cmd
-                # Eq. 9：每個 MPC 週期把目標拉回中心的角度，換成角速度
-                rates = (float(np.clip(math.atan(-lam_u * s1[0] / f) / dt_mpc, -rate_max, rate_max)),
-                         float(np.clip(math.atan(-lam_v * s1[1] / f) / dt_mpc, -rate_max, rate_max)))
 
+                # ---------- 4. 雲台律（Eq. 9）
+                if follow:
+                    # 世界座標的視線：每個 MPC 週期把視線往目標方向拉 λ 倍（= Eq. 9 的比例律，在增穩座標下做）
+                    if los_w is not None:
+                        az_t, el_t = geo.los_angles(los_w)
+                        rates = (float(np.clip(lam_u * geo.wrap(az_t - g[0]) / dt_mpc, -rate_max, rate_max)),
+                                 float(np.clip(lam_v * (el_t - g[1]) / dt_mpc, -rate_max, rate_max)))
+                    else:
+                        rates = (0.0, 0.0)
+                elif np.isfinite(s1[0]) and np.isfinite(s1[1]):
+                    # 原版：每個 MPC 週期把目標拉回中心的角度，換成角速度
+                    rates = (float(np.clip(math.atan(-lam_u * s1[0] / f) / dt_mpc, -rate_max, rate_max)),
+                             float(np.clip(math.atan(-lam_v * s1[1] / f) / dt_mpc, -rate_max, rate_max)))
+                else:
+                    rates = (0.0, 0.0)
+
+            lost_s = now - last_meas_t
             if status is not None and mpc_tick:
                 upd = dict(t=now - t0, mode=mode, n1=n1, u_cmd=u_cmd, roll=st.roll_deg, u2=u2, v2=v2,
                            R=math.hypot(st.jx - st.x, st.jy - st.y) if st.jeep_ok else np.nan,
-                           u1_truth=ut1, v1_truth=vt1, bbox=None)
+                           u1_truth=ut1, v1_truth=vt1, bbox=None,
+                           pred_uv=s1 if predicted else None,
+                           gimbal_text=f"gimbal: {gimbal.mode}"
+                                       f"{'  SATURATED' if ginfo.get('saturated') else ''}"
+                                       f"{'  (flipped)' if ginfo.get('flipped') else ''}")
+                lost_txt = f"  LOST {lost_s:.1f} s (predicting)" if predicted else ""
                 if vision is not None:
                     res, _ = vision[1].get_latest()
                     upd.update(bbox=res.bbox if res.detected else None, conf=res.confidence,
                                vision_text=f"YOLO: {'detected' if res.detected else 'MISSED'}  "
-                                           f"{vision[1].vision_fps:.0f} Hz  age {(now - res.timestamp) * 1e3:.0f} ms")
+                                           f"{vision[1].vision_fps:.0f} Hz  age {(now - res.timestamp) * 1e3:.0f} ms"
+                                           + lost_txt)
+                else:
+                    upd.update(vision_text=f"measure: truth{'' if meas_valid else '  OUT OF IMAGE'}" + lost_txt)
                 status.update(**upd)
 
-            # 雲台：依真實經過時間積分
-            pan = math.atan2(math.sin(pan + rates[0] * dt), math.cos(pan + rates[0] * dt))
-            tilt = float(np.clip(tilt + rates[1] * dt, tilt_min, tilt_max))
-            link.gimbal(pan, tilt)
+            # 雲台：依真實經過時間積分，再換成相機姿態送出
+            if follow:
+                g[0] = geo.wrap(g[0] + rates[0] * dt)
+                g[1] = float(np.clip(g[1] + rates[1] * dt, -math.pi / 2, math.pi / 4))
+            else:
+                g[0] = geo.wrap(g[0] + rates[0] * dt)
+                g[1] = float(np.clip(g[1] + rates[1] * dt, tilt_min, tilt_max))
+            pan, tilt, ginfo = command_gimbal(st)
 
             elev, ail, rud, thr = autopilot.update(st, u_cmd, dt)
             link.controls(elev, ail, rud, thr)
 
+            jy_, jr_, jp_ = ginfo["joints"]
             rec.add(t=now, mpc_tick=int(mpc_tick), x=st.x, y=st.y, agl=st.agl, psi=st.psi,
                     heading=st.heading_deg, psi_rate=st.psi_rate,
                     psi_rate_coord=-9.81 * math.tan(math.radians(st.roll_deg)) / max(st.airspeed, 1.0),
@@ -465,8 +618,12 @@ def main(argv=None):
                     u_cmd=u_cmd, phi_cmd=autopilot.last["phi_cmd"], theta_cmd=autopilot.last["theta_cmd"],
                     elevator=elev, aileron=ail, rudder=rud, throttle=thr,
                     mode=mode, n1=n1, solve_ms=solve_ms, detected=detected, yolo_ts=yolo_ts,
+                    meas_valid=meas_valid, predicted=predicted, lost_s=lost_s,
                     u1=s1[0], v1=s1[1], u1_truth=ut1, v1_truth=vt1, u2=u2, v2=v2, u3=u3, v3=v3, g1=g1,
-                    pan=pan, tilt=tilt, pan_rate=rates[0], tilt_rate=rates[1])
+                    pan=pan, tilt=tilt, pan_rate=rates[0], tilt_rate=rates[1],
+                    joint_yaw=jy_, joint_roll=jr_, joint_pitch=jp_,
+                    gimbal_sat=int(ginfo["saturated"]), gimbal_flip=int(ginfo["flipped"]),
+                    cam_roll=math.degrees(ginfo["cam_roll"]))
             clock.sleep(tick - (clock.now() - now))
     except KeyboardInterrupt:
         print("\n[Yang X-Plane] 使用者中斷")
@@ -482,6 +639,8 @@ def main(argv=None):
         if rec.rows:
             summary = summarize(rec, params, k, dt_mpc)
             summary.update(profile=xp["profile"], controller=args.controller, measure=args.measure,
+                           setup="enhanced" if enhanced else "yang_original", gimbal_mode=gimbal.mode,
+                           lost_handling=lost_handling, truth_fov_check=fov_check,
                            start=xp["scenario"]["start"], vc_paper=xp["scenario"]["jeep_speed_paper"],
                            jeep_speed_target=v_jeep, jeep_speed_paused_probe=v_meas,
                            **run_checks(rec, params, v_jeep, start_distance(xp, k, params)))
@@ -489,10 +648,13 @@ def main(argv=None):
                 summary["yolo_fps"] = yolo_frames / summary["duration_s"]   # YOLO 實際處理張數（yolo_hz 受 MPC 取樣上限 12.5 Hz）
             save_json(out / "summary.json", {"summary": summary, "params": params, "xp": xp})
             plot(rec, params, out / "overview.png",
-                 f"Yang 2024 in X-Plane: {args.controller}, {args.measure}, start = {xp['scenario']['start']}")
+                 f"Yang 2024 in X-Plane: {args.controller}, {args.measure}, start = {xp['scenario']['start']}, "
+                 f"{'enhanced (gimbal ' + gimbal.mode + ', lost handling)' if enhanced else 'Yang original'}")
             for key in ("duration_s", "loop_hz", "mpc_hz", "rmse_s2_norm_x537", "R_max_m", "time_outside_RM_s",
                         "u_sat_ratio", "psi_rate_tracking_rms", "agl_max_err_m", "roll_max_deg",
-                        "elevator_std", "yolo_detect_ratio", "yolo_fps", "yolo_age_ms_mean", "yolo_err_px_rms"):
+                        "elevator_std", "yolo_detect_ratio", "yolo_fps", "yolo_age_ms_mean", "yolo_err_px_rms",
+                        "meas_valid_ratio", "predicted_ratio", "lost_max_s", "lost_episodes_over_0p5s",
+                        "gimbal_sat_ratio", "cam_roll_max_deg"):
                 if summary.get(key) is None:
                     continue
                 print(f"  {key:24s} {summary[key]}")
