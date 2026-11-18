@@ -108,7 +108,7 @@ def main(argv=None):
         pan, tilt = pan + math.radians(dp), tilt + math.radians(dt_)
         _, C_body, info = gimbal.rows(pan, tilt, pitch, roll)
         if gimbal.mode == "follow":
-            link.gimbal_head(*gimbal.head_angles(C_body))
+            link.gimbal_head(C_body)
         else:
             link.gimbal(pan, tilt)
         clock.sleep(1.0)

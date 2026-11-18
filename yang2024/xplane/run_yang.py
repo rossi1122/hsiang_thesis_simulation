@@ -333,7 +333,7 @@ def main(argv=None):
             pan_c, tilt_c = g[0], g[1]
         _, C_body_cmd, info = gimbal.rows(pan_c, tilt_c, pitch_r, roll_r)
         if follow:
-            link.gimbal_head(*gimbal.head_angles(C_body_cmd))
+            link.gimbal_head(C_body_cmd)
         else:
             link.gimbal(pan_c, info["joints"][2])
         return pan_c, tilt_c, info

@@ -102,3 +102,36 @@ def test_follow_mode_target_behind_uses_flip():
     assert info["joints"][2] < -math.pi / 2
     u, v, _ = geo.project_rows(target, uav, 0.0, C_H, F)
     assert abs(u) < 1e-6 and abs(v) < 1e-6
+
+
+def test_xplane_head_angles_bias_after_roll():
+    """X-Plane：畫面 = 頭部 ZYX 旋轉 × 固定往下 7°。換算出的頭部角度要正好做出想要的相機姿態；滾轉為 0 時等於原本的「tilt + 7°」。"""
+    bias = math.radians(7.0)
+    for _ in range(100):
+        C = geo.rows_from_joints(RNG.uniform(-3, 3), RNG.uniform(-0.5, 0.5), RNG.uniform(-1.4, 0.7))
+        a, the, r = geo.xplane_head_angles(C, bias)
+        R_view = geo.rot_z(a) @ geo.rot_y(-the) @ geo.rot_x(r) @ geo.rot_y(bias)
+        assert np.allclose(geo.M0 @ R_view.T, C, atol=1e-9)
+    for _ in range(20):
+        pan, tilt = RNG.uniform(-3, 3), RNG.uniform(-1.3, 0.1)
+        a, the, r = geo.xplane_head_angles(geo.camera_rows(pan, tilt), bias)
+        assert np.allclose((a, the, r), (pan, tilt + bias, 0.0), atol=1e-9)
+
+
+def test_camera_check_roll30_data_explained():
+    """2026-11-18 camera_check --roll 30 的實測（YOLO − 舊模型預測）用「校正在滾轉之後」的模型可以解釋到 2 px 內。"""
+    f, bias = 1662.77, math.radians(7.0)
+    pitch, roll = math.radians(-7.5), math.radians(31.5)
+    obs = {(0, 0): (24.5, -2.0), (5, 0): (16.1, -2.1), (-5, 0): (33.9, -3.6), (0, -5): (25.5, -3.0), (0, 5): (24.0, 1.0)}
+    tgt = np.array([256.0 * math.cos(math.radians(-90.5)), 256.0 * math.sin(math.radians(-90.5)), -297.0])
+    g = GimbalModel("follow")
+    errs = []
+    for (dp, dt), o in obs.items():
+        az, el = geo.los_angles(tgt)
+        _, Cb, _ = g.rows(az + math.radians(dp), el + math.radians(dt), pitch, roll)
+        a, pu, r = geo.head_angles_from_rows(Cb)                       # 舊程式送的角度（tilt + 7° 在滾轉之前）
+        R_view = geo.rot_z(a) @ geo.rot_y(-(pu + bias)) @ geo.rot_x(r) @ geo.rot_y(bias)
+        act = geo.project_rows(tgt, [0, 0, 0], 0.0, geo.rows_body_to_level(geo.M0 @ R_view.T, pitch, roll), f)
+        pred = geo.project_rows(tgt, [0, 0, 0], 0.0, geo.rows_body_to_level(Cb, pitch, roll), f)
+        errs.append(math.hypot(act[0] - pred[0] - o[0], act[1] - pred[1] - o[1]))
+    assert max(errs) < 3.0

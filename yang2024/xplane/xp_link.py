@@ -127,11 +127,16 @@ class XPLink:
         self.c.sendDREFs(["sim/graphics/view/pilots_head_psi", "sim/graphics/view/pilots_head_the"],
                          [head_psi, head_the])
 
-    def gimbal_head(self, yaw, pitch_up, roll):
-        """增穩雲台用：直接送頭部偏航、俯仰（往上為正）、滾轉（rad，geometry.head_angles_from_rows 的結果）。"""
+    def gimbal_head(self, C_body):
+        """增穩雲台用：給定想要的相機姿態（機體座標相機列），換成 X-Plane 頭部偏航、俯仰、滾轉送出。
+
+        俯仰校正（head_pitch_bias_deg）在 X-Plane 裡是「滾轉之後」的固定偏移，換算見 geometry.xplane_head_angles。
+        """
+        from .. import geometry as geo
+        yaw, the, phi = geo.xplane_head_angles(C_body, math.radians(self.cam["head_pitch_bias_deg"]))
         head_psi = self.cam["head_psi_sign"] * math.degrees(yaw)
-        head_the = math.degrees(pitch_up) + self.cam["head_pitch_bias_deg"]
-        head_phi = self.cam.get("head_phi_sign", 1) * math.degrees(roll)
+        head_the = math.degrees(the)
+        head_phi = self.cam.get("head_phi_sign", 1) * math.degrees(phi)
         self.c.sendDREFs(["sim/graphics/view/pilots_head_psi", "sim/graphics/view/pilots_head_the",
                           "sim/graphics/view/pilots_head_phi"], [head_psi, head_the, head_phi])
 

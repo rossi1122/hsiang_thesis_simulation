@@ -145,6 +145,22 @@ def head_angles_from_rows(C_body):
     return yaw, -pitch_down, roll
 
 
+def xplane_head_angles(C_body, view_pitch_offset):
+    """機體座標相機列 → 要送給 X-Plane 的頭部 (偏航, 俯仰往上為正, 滾轉)，已包含俯仰校正。
+
+    X-Plane 實際畫面 = 頭部旋轉（ZYX：偏航 → 俯仰 → 繞視線滾轉）之後，再固定往下偏 view_pitch_offset
+    （= xp_params 的 head_pitch_bias_deg，2026-11-17 在水平姿態校正為 7°）。
+    2026-11-18 camera_check --roll 30：若把校正量直接加在頭部俯仰上（在滾轉之前），頭部滾轉 7° 時會多出
+    約 25 px 的水平誤差；改成「滾轉之後」的模型後，五組誤差 RMS 1.6 px。滾轉為 0 時兩種寫法完全相同。
+    """
+    R_view = C_body.T @ M0
+    R_head = R_view @ rot_y(-view_pitch_offset)
+    pitch_down = float(np.arcsin(np.clip(-R_head[2, 0], -1.0, 1.0)))
+    roll = float(np.arctan2(R_head[2, 1], R_head[2, 2]))
+    yaw = float(np.arctan2(R_head[1, 0], R_head[0, 0]))
+    return yaw, -pitch_down, roll
+
+
 def ray_level_from_pixel(u1, v1, C_H, f):
     """像素 → 水平航向座標 H 中的射線方向（未正規化）。"""
     return C_H.T @ np.array([u1, v1, f], float)
