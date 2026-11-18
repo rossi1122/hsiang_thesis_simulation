@@ -266,32 +266,50 @@ def main(argv=None):
         vision = start_yolo(args.yolo_model, cam, H)
     st = wait_for_jeep(link, clock)
     v_meas = float("nan")
+    settle = 2.0
+
+    def place(st_ref):
+        """擺放飛機。預先補上「暫停等待 settle 秒」期間吉普車會開走的距離。
+
+        2026-11-17 實驗 A：飛機 PC 的 X-Plane 在暫停中量到的吉普車速度只有 6.9 m/s，
+        但紀錄中吉普車其實一直是 13.2 m/s → 暫停時多人連線位置更新不可靠。
+        所以補償改用「這個 V_c 應有的速度 × 吉普車航向」，實測速度只拿來檢查筆電的 --speed 有沒有打錯。
+        """
+        lead = v_jeep * (settle + 0.1)
+        shift = (lead * math.cos(st_ref.jpsi), lead * math.sin(st_ref.jpsi))
+        place_relative_to_jeep(link, st_ref, xp, k, H, jeep_shift=shift)
+        clock.sleep(settle)
+        return link.read()
+
+    def point_gimbal(st_now):
+        p, t_ = geo.pointing_angles(st_now.jeep_pos, st_now.pos, st_now.psi,
+                                    math.radians(st_now.pitch_deg), math.radians(st_now.roll_deg))
+        t_ = float(np.clip(t_, tilt_min, tilt_max))
+        link.gimbal(p, t_)
+        return p, t_
+
     if not args.no_reset:
-        # 擺放時預先補上「暫停等待 settle 秒」期間吉普車會開走的距離。
-        # 2026-11-17 實驗 A：飛機 PC 的 X-Plane 在暫停中（上一次結束時暫停）量到的吉普車速度只有 6.9 m/s，
-        # 但紀錄中吉普車其實一直是 13.2 m/s → 暫停時多人連線位置更新不可靠。
-        # 所以補償改用「這個 V_c 應有的速度 × 吉普車航向」，實測速度只拿來檢查筆電的 --speed 有沒有打錯。
         clock.sleep(1.0)
         st2 = link.read()
         dtj = max(st2.t - st.t, 1e-3)
         v_meas = math.hypot(st2.jx - st.jx, st2.jy - st.jy) / dtj
-        settle = 2.0
-        lead = v_jeep * (settle + 0.1)
-        shift = (lead * math.cos(st2.jpsi), lead * math.sin(st2.jpsi))
         print(f"[擺放] 吉普車速度：應為 {v_jeep:.1f} m/s，暫停中粗測約 {v_meas:.1f} m/s（暫停時不準，只供參考）")
         if v_meas > 1.5 * v_jeep:
             print(f"[擺放] ⚠️ 吉普車比 {v_jeep:.1f} m/s 快很多：筆電的 jeep_controller.py --speed 可能打錯")
-        place_relative_to_jeep(link, st2, xp, k, H, jeep_shift=shift)
-        clock.sleep(settle)
-        st = link.read()
-        print(f"[擺放] 飛機離地 {link.read().agl:.0f} m（目標 {H:.0f} m）")
-    pan, tilt = geo.pointing_angles(st.jeep_pos, st.pos, st.psi,
-                                    math.radians(st.pitch_deg), math.radians(st.roll_deg))
-    tilt = float(np.clip(tilt, tilt_min, tilt_max))
-    link.gimbal(pan, tilt)
+        st = place(st2)
+        print(f"[擺放] 飛機離地 {st.agl:.0f} m（目標 {H:.0f} m）")
+    pan, tilt = point_gimbal(st)
     if vision is not None:
+        t_wait = clock.now()
         clock.sleep(0.2)                     # 讓 X-Plane 先畫出雲台轉好的畫面
         wait_first_detection(vision, clock, since=clock.now())
+        extra = clock.now() - t_wait
+        if not args.no_reset and extra > 0.3:
+            # 等 YOLO 的時間模擬是暫停的，但吉普車照樣在開 → 重新擺放，起始距離才會和 truth 實驗一樣
+            # （2026-11-17 YOLO 版 A：等了約 0.5 s，起始 258 m 而不是 255 m；遠距離可能要等到 8 s ≈ 150 m）
+            print(f"[擺放] 等 YOLO 用了 {extra:.1f} s，吉普車又開了約 {v_jeep * extra:.0f} m → 重新擺放")
+            st = place(link.read())
+            pan, tilt = point_gimbal(st)
         frames0 = vision[1].frame_count
     poses = PoseHistory()
     rec = Recorder()

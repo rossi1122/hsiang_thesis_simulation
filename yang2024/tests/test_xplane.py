@@ -175,7 +175,8 @@ def test_yolo_stats():
     assert np.isclose(s["yolo_err_px_rms"], 5.0)
 
 
-def test_run_yang_yolo_path_with_fake_detector(tmp_path, monkeypatch):
+@pytest.mark.parametrize("sees", [True, False])
+def test_run_yang_yolo_path_with_fake_detector(tmp_path, monkeypatch, sees):
     """用假的 vision_driver 走一次 YOLO 流程：暖機 → 等第一次偵測 → 閉迴路 → summary 有 YOLO 統計。"""
     import types
     from yang2024.xplane import run_yang as ry
@@ -183,7 +184,7 @@ def test_run_yang_yolo_path_with_fake_detector(tmp_path, monkeypatch):
 
     class Res:
         def __init__(self, t):
-            self.timestamp, self.detected, self.confidence = t, True, 0.9
+            self.timestamp, self.detected, self.confidence = t, sees, 0.9
             self.raw_center_x, self.raw_center_y, self.bbox = 960.0, 505.0, (950, 495, 970, 515)
 
     class Detector:
@@ -232,11 +233,17 @@ def test_run_yang_yolo_path_with_fake_detector(tmp_path, monkeypatch):
         clock_ref["now"] = out[1].now
         return out
     monkeypatch.setattr(ry, "setup", setup_spy)
-    out = ry.main(["--dry-run", "--measure", "yolo", "--yolo-model", "x.pt", "--time", "10", "--out", str(tmp_path)])
+    out = ry.main(["--dry-run", "--measure", "yolo", "--yolo-model", "x.pt", "--start", "far", "--vc", "10",
+                   "--time", "10", "--out", str(tmp_path)])
     import json
     s = json.loads((out / "summary.json").read_text(encoding="utf-8"))["summary"]
-    assert s["yolo_detect_ratio"] == 1.0 and s["yolo_fps"] is not None
-    assert 30 <= s["yolo_age_ms_mean"] <= 60
+    # 不論 YOLO 等多久（看不到時等 8 s，吉普車又開 150 m），重新擺放後起始距離都要接近 900 m
+    assert abs(s["R_start_m"] - 900.0) < 15.0
+    if sees:
+        assert s["yolo_detect_ratio"] == 1.0 and s["yolo_fps"] is not None
+        assert 30 <= s["yolo_age_ms_mean"] <= 60
+    else:
+        assert s["yolo_detect_ratio"] == 0.0
 
 
 def test_pose_history_rejects_stale():
