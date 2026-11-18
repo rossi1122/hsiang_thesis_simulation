@@ -445,6 +445,13 @@ def main(argv=None):
     yolo_ts = float("nan")
     u2 = v2 = u3 = v3 = g1 = np.nan
     meas_valid, predicted = 0, 0
+    if lost_handling:
+        # 起始時雲台已對準吉普車（目標在畫面中心）：用它當 s2 的初值，第一次偵測前的推算才有正確的起點
+        # （2026-11-18 改良版 YOLO E1：第一步還沒偵測到時從 s2 = (0, 0) 推算，畫面特徵在 t = 0 跳到 v1 ≈ 4972 px）
+        C_H0 = geo.rows_body_to_level(C_body_cmd, math.radians(st.pitch_deg), math.radians(st.roll_deg))
+        u2_0, v2_0, _, _, ok0 = geo.ideal_and_down_from_ray(geo.ray_level_from_pixel(0.0, 0.0, C_H0, f), alpha, f)
+        if ok0:
+            s2_last = (u2_0, v2_0)
     t0 = clock.now()
     next_mpc = t0
     last_tick = t0

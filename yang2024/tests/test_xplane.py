@@ -314,3 +314,11 @@ def test_enhanced_dropout_prediction_keeps_target_in_view(tmp_path, monkeypatch)
     after = mp[tm > tm[mp.meas_valid == 0].max()]
     assert (after.meas_valid == 1).all()                                # 之後立刻重新抓到
     assert log.gimbal_sat.mean() < 0.05
+
+
+def test_enhanced_first_tick_prediction_starts_at_target(tmp_path, monkeypatch):
+    """改良版：開頭還沒偵測到時，推算要從「目標在畫面中心」開始，不能從 s2 = (0, 0) 開始。"""
+    log = _run_with_dropout(tmp_path, monkeypatch, ["--time", "5"], window=(0.0, 1.0))
+    early = log[(log.t - log.t.iloc[0]) < 1.0]
+    assert (early.predicted == 1).any()
+    assert (early.u1.abs() < 300).all() and (early.v1.abs() < 300).all()
