@@ -117,7 +117,9 @@
 
 > **目前進度（2026-11-18）**：✅ Phase 0 雙機模擬、✅ Phase 1 數值重現＋遠距離起始＋影像運動拆解、✅ Phase 2 X-Plane 重現 Yang 2024
 > （尺度 V = 30 m/s、H = 300 m；τ ≈ 0.52 s；truth A–E2、YOLO 版；改良版環境 = SIYI A8 mini 增穩雲台＋跟丟處理，`--yang-original` 為原版）。
-> 總結在 `docs/phase2_summary.md`，細節在 `docs/reproduction_log.md`。**下一步是 Phase 3（C2 目標運動估測）。**
+> 總結在 `docs/phase2_summary.md`，細節在 `docs/reproduction_log.md`。
+> **2026-11-19 老師回饋後情境改變**：不再做近距離實驗；改為**長程追蹤 20–25 m/s、會減速右轉 90° 的車輛**（快時跟隨、慢時盤旋），
+> 雲台要有真實轉速限制並與飛機整合。新計畫在 `docs/plan_20261121.md`（下一步：確認參數 → 實機量雲台 → 雲台限制 → 轉彎劇本 → Yang 基準 → C2）。
 
 - **Phase 0 熟悉環境** ✅ 已跑通學長的雙機模擬。剩餘待決定（可在 Phase 2 一併處理）：飛機機型與可飛的最低空速、參數縮放方式（3.2）、jeep 真值 log 與飛機 log 的時間對齊。
 - **Phase 1 純數值重現 + 問題量化（不接 X-Plane）**：
