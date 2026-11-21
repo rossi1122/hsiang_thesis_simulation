@@ -1,0 +1,54 @@
+"""吉普車轉彎劇本（TurnProfile）的離線檢查，不需要 X-Plane。"""
+import math
+
+import pytest
+
+from yang2024.jeep.jeep_turn import TurnProfile, wrap180
+
+
+def drive(prof, T=80.0, dt=0.05, v0=None, tau_v=2.0):
+    """簡單的車：速度一階追速度命令、航向完全跟上命令。回傳每一步的 (t, v, psi, phase)。"""
+    v = prof.v_cruise if v0 is None else v0
+    out = []
+    for k in range(int(T / dt)):
+        t = k * dt
+        psi, v_cmd, phase = prof.command(t, v, dt)
+        v += (v_cmd - v) * dt / tau_v
+        out.append((t, v, psi, phase))
+    return out
+
+
+def test_curve_keeps_speed_and_turns_right_90():
+    prof = TurnProfile("curve", 20.0, 200.0, turn_at=10.0, psi0=177.0)
+    run = drive(prof)
+    assert prof.v_turn == pytest.approx(20.0)
+    assert min(v for _, v, _, _ in run) == pytest.approx(20.0, abs=1e-6)
+    assert wrap180(run[-1][2] - 177.0) == pytest.approx(90.0)
+    assert run[-1][3] == "exit"
+    # 半徑 200 m、20 m/s → 90° 約需 π/2·200/20 = 15.7 s
+    t_turn = [t for t, _, _, ph in run if ph == "turn"]
+    assert t_turn[-1] - t_turn[0] == pytest.approx(math.pi / 2 * 200 / 20, abs=0.2)
+
+
+def test_corner_slows_to_lateral_limit_then_recovers():
+    prof = TurnProfile("corner", 20.0, 20.0, turn_at=10.0, psi0=177.0, a_lat=3.0)
+    run = drive(prof)
+    assert prof.v_turn == pytest.approx(math.sqrt(3.0 * 20.0))          # ≈ 7.7 m/s
+    phases = [ph for _, _, _, ph in run]
+    assert phases.index("brake") < phases.index("turn") < phases.index("exit")
+    v_in_turn = [v for _, v, _, ph in run if ph == "turn"]
+    assert max(v_in_turn) <= prof.v_turn + 1.0 + 1e-6                   # 彎中側向加速度 ≤ 約 0.3 g
+    assert run[-1][1] > 19.0                                            # 出彎後加速回原速
+    assert wrap180(run[-1][2] - 177.0) == pytest.approx(90.0)
+
+
+def test_noslow_and_left_turn():
+    prof = TurnProfile("noslow", 20.0, 20.0, turn_at=5.0, psi0=10.0, direction="left")
+    run = drive(prof, T=30.0)
+    assert prof.v_turn == pytest.approx(20.0)
+    assert wrap180(run[-1][2] - 10.0) == pytest.approx(-90.0)
+
+
+def test_bad_mode():
+    with pytest.raises(ValueError):
+        TurnProfile("drift", 20.0, 20.0, 5.0, 0.0)
