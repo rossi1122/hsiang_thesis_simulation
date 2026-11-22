@@ -98,7 +98,8 @@ def main():
     ap.add_argument("--a-lat", type=float, default=3.0, help="corner：彎中側向加速度上限 m/s²（3 ≈ 0.3 g）")
     ap.add_argument("--a-brake", type=float, default=2.5, help="corner：進彎減速度 m/s²")
     ap.add_argument("--direction", choices=("right", "left"), default="right")
-    ap.add_argument("--heading", type=float, default=177.0, help="直線段航向（度，真北順時針；跑道約 177）")
+    ap.add_argument("--heading", type=float, default=None,
+                    help="直線段航向（度，真北順時針）；不給 = 用吉普車擺好時的車頭方向（換跑道、停機坪不用改）")
     ap.add_argument("--max-steer", type=float, default=0.15, help="轉向命令上限（學長預設 0.15）")
     ap.add_argument("--duration", type=float, default=90.0)
     ap.add_argument("--roll-abort", type=float, default=35.0, help="車身滾轉超過幾度就停車（翻車保護）")
@@ -108,23 +109,36 @@ def main():
     args = ap.parse_args()
     radius = args.radius if args.radius is not None else DEFAULT_RADIUS[args.mode]
 
-    prof = TurnProfile(args.mode, args.speed, radius, args.turn_at, args.heading, a_lat=args.a_lat,
+    JeepController = import_jeep_controller()
+    ctrl = JeepController(target_speed=args.speed, target_heading=args.heading or 0.0, control_hz=args.hz,
+                          xp_host=args.host, xp_port=args.port)
+    ctrl.max_steer = args.max_steer
+    ctrl.initialize()
+    psi0 = args.heading
+    if psi0 is None:
+        st0 = None
+        for _ in range(20):
+            st0 = ctrl.get_state()
+            if st0 is not None:
+                break
+            time.sleep(0.1)
+        if st0 is None:
+            print("[錯誤] 讀不到吉普車狀態，請確認 X-Plane 已開啟、XPlaneConnect 正常")
+            return
+        psi0 = st0["heading"]
+        print(f"[航向] 沒有給 --heading，用目前車頭方向 {psi0:.1f}° 當直線段航向")
+
+    prof = TurnProfile(args.mode, args.speed, radius, args.turn_at, psi0, a_lat=args.a_lat,
                        a_brake=args.a_brake, direction=args.direction)
     print(f"[劇本] {args.mode}：直線 {args.speed:.1f} m/s、{args.turn_at:.0f} s 後{'右' if args.direction == 'right' else '左'}轉 90°、"
           f"半徑 {radius:.0f} m、彎中速度 {prof.v_turn:.1f} m/s"
           f"（側向加速度 {prof.v_turn ** 2 / radius / G:.2f} g）")
 
-    JeepController = import_jeep_controller()
-    ctrl = JeepController(target_speed=args.speed, target_heading=args.heading, control_hz=args.hz,
-                          xp_host=args.host, xp_port=args.port)
-    ctrl.max_steer = args.max_steer
-    ctrl.initialize()
-
     os.makedirs("jeep_turn_logs", exist_ok=True)
     path = os.path.join("jeep_turn_logs", f"jeep_turn_{datetime.now():%Y%m%d_%H%M%S}_{args.mode}.csv")
     f = open(path, "w", newline="")
     w = csv.writer(f)
-    w.writerow(["wall_time", "time", "phase", "psi_cmd", "v_cmd", "heading", "groundspeed", "turned_deg",
+    w.writerow(["wall_time", "time", "phase", "psi_cmd", "v_cmd", "heading", "groundspeed", "dist_m", "turned_deg",
                 "roll_deg", "yaw_rate_dps", "a_lat_mps2", "x_position", "y_position", "local_x", "local_z",
                 "lat", "lon", "heading_err", "steer", "throttle", "brake"])
     print(f"[CSV] {path}")
@@ -132,6 +146,8 @@ def main():
     dt = 1.0 / args.hz
     t0 = time.time()
     prev_heading = None
+    prev_xz = None
+    dist = 0.0          # 累積行駛距離（m），可用來量跑道／停機坪長度
     actual_turn = 0.0
     stats = dict(v_turn_start=None, v_min=None, roll_max=0.0, alat_max=0.0, t_turn_start=None,
                  t_turn_end=None, radius=[])
@@ -155,6 +171,9 @@ def main():
             if prev_heading is not None:
                 actual_turn += wrap180(heading - prev_heading)
             prev_heading = heading
+            if prev_xz is not None:
+                dist += math.hypot(st["local_x"] - prev_xz[0], st["local_z"] - prev_xz[1])
+            prev_xz = (st["local_x"], st["local_z"])
 
             psi_cmd, v_cmd, phase = prof.command(t, speed, dt)
             h_err = ctrl.heading_error(heading, psi_cmd)
@@ -181,12 +200,12 @@ def main():
                     stats["radius"].append(speed / abs(math.radians(yaw_rate)))
 
             w.writerow([f"{loop:.6f}", f"{t:.3f}", phase, f"{psi_cmd:.3f}", f"{v_cmd:.3f}", f"{heading:.3f}",
-                        f"{speed:.3f}", f"{actual_turn:.2f}", f"{roll:.3f}", f"{yaw_rate:.3f}", f"{a_lat:.3f}",
+                        f"{speed:.3f}", f"{dist:.1f}", f"{actual_turn:.2f}", f"{roll:.3f}", f"{yaw_rate:.3f}", f"{a_lat:.3f}",
                         f"{st['x_position']:.3f}", f"{st['y_position']:.3f}", f"{st['local_x']:.3f}",
                         f"{st['local_z']:.3f}", f"{st['lat']:.8f}", f"{st['lon']:.8f}", f"{h_err:.3f}",
                         f"{steer:.4f}", f"{throttle:.4f}", f"{brake:.4f}"])
             if int(t / dt) % args.hz == 0:
-                print(f"{t:6.1f} s  {phase:8s}  v_cmd {v_cmd:5.1f}  v {speed:5.1f} m/s  "
+                print(f"{t:6.1f} s  {phase:8s}  v_cmd {v_cmd:5.1f}  v {speed:5.1f} m/s  已開 {dist:6.0f} m  "
                       f"航向命令 {psi_cmd:6.1f}  航向 {heading:6.1f}  已轉 {actual_turn:+6.1f}°  "
                       f"滾轉 {roll:+5.1f}°  側向 {a_lat / G:+.2f} g")
             if math.isfinite(roll) and abs(roll) > args.roll_abort:
@@ -213,6 +232,7 @@ def main():
         if r:
             print(f"  實際轉彎半徑（中位數）{r[len(r) // 2]:.0f} m")
         print(f"  最大側向加速度 {stats['alat_max'] / G:.2f} g；最大車身滾轉 {stats['roll_max']:.1f}°")
+    print(f"  總行駛距離 {dist:.0f} m")
     print(f"  log：{path}")
     print("=" * 60)
 
