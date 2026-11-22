@@ -275,12 +275,25 @@ def main(argv=None):
                     help="Yang 2024 原版（兩軸機身雲台、Eq. 9 像素律、偵測不到時沿用舊值）。預設是改良版（增穩雲台 + 跟丟處理）")
     ap.add_argument("--vc", type=float, default=None,
                     help="論文尺度的目標速度 V_c（論文用 5、7、9；預設 7）。吉普車實際速度 = V_c × k_V，例如 9 → 16.9 m/s")
+    ap.add_argument("--jeep-speed", type=float, default=None,
+                    help="直接給吉普車實際速度 m/s（例如 20、25；覆寫 --vc）。要和 jeep 筆電的 --speed 一致")
+    ap.add_argument("--start-dist", type=float, default=None,
+                    help="飛機起始在吉普車正後方幾公尺（實際距離，例如 700；會自動用 far 起始）")
+    ap.add_argument("--wait-jeep", action="store_true",
+                    help="先開飛機程式、等吉普車開始移動（離原位 > 20 m）再等 5 s 加速後才擺放飛機，"
+                         "減少吉普車在等待期間用掉的路段")
     add_profile_arg(ap)
     args = ap.parse_args(argv)
 
-    link, clock, params, xp, k = setup(dry_run=args.dry_run, profile=args.profile, vc=args.vc)
+    link, clock, params, xp, k = setup(dry_run=args.dry_run, profile=args.profile, vc=args.vc,
+                                       jeep_speed=args.jeep_speed)
+    if args.jeep_speed is not None:   # 長程追蹤情境（2026-11-19 之後）：直接用實際速度，不再用論文尺度換算
+        xp["scenario"]["jeep_speed_paper"] = args.jeep_speed / k["k_V"]
     if args.start:
         xp["scenario"]["start"] = args.start
+    if args.start_dist is not None:
+        xp["scenario"]["start"] = "far"
+        xp["scenario"]["far_distance_paper"] = args.start_dist / k["k_L"]
     T = args.time if args.time is not None else xp["loop"]["max_time_s"]
     if args.measure == "yolo" and not args.yolo_model:
         raise SystemExit("--measure yolo 需要 --yolo-model（例如 yolo_model/yolo_jeep12/weights/best.pt）")
@@ -309,7 +322,7 @@ def main(argv=None):
     print(f"[Yang X-Plane] V = {V} m/s、H = {H} m、R_d = {params['R_d']:.0f} m、R_M = {params['R_M']:.0f} m、"
           f"u_max = {params['u_max']:.4f} rad/s、Δt = {dt_mpc:.3f} s、f = {f:.1f} px")
     v_jeep = jeep_speed_target(xp, k)
-    print(f"[Yang X-Plane] 吉普車速度應為 {xp['scenario']['jeep_speed_paper']} × {k['k_V']:.3f} = "
+    print(f"[Yang X-Plane] 吉普車速度應為 {xp['scenario']['jeep_speed_paper']:.3f} × {k['k_V']:.3f} = "
           f"{v_jeep:.1f} m/s（jeep_controller.py --speed）")
 
     def depth_of(v2):
@@ -342,6 +355,18 @@ def main(argv=None):
     if args.measure == "yolo":
         vision = start_yolo(args.yolo_model, cam, H)
     st = wait_for_jeep(link, clock)
+    if args.wait_jeep:
+        p0 = (st.jx, st.jy)
+        print("[等待] 飛機程式已就緒，請現在在 jeep 筆電啟動 jeep_turn.py（等吉普車開始移動）...")
+        t_w = clock.now()
+        while math.hypot(st.jx - p0[0], st.jy - p0[1]) < 20.0:
+            if clock.now() - t_w > 600:
+                raise SystemExit("等了 10 分鐘吉普車都沒有移動，結束")
+            clock.sleep(0.2)
+            st = link.read()
+        print("[等待] 吉普車開始移動，再等 5 s 讓它加速到定速")
+        clock.sleep(5.0)
+        st = link.read()
     v_meas = float("nan")
     settle = 2.0
 
@@ -397,8 +422,11 @@ def main(argv=None):
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
     else:
+        speed_tag = (f"_v{args.jeep_speed:g}" if args.jeep_speed is not None
+                     else f"_vc{xp['scenario']['jeep_speed_paper']:g}")
+        dist_tag = f"_d{args.start_dist:g}" if args.start_dist is not None else ""
         out = output_dir(xp, f"yang_{args.controller}_{args.measure}_{xp['scenario']['start']}"
-                             f"_vc{xp['scenario']['jeep_speed_paper']:g}{'_enh' if enhanced else ''}")
+                             f"{dist_tag}{speed_tag}{'_enh' if enhanced else ''}")
     print(f"[Yang X-Plane] 紀錄存到 {out}")
 
     overlay = status = None

@@ -106,6 +106,17 @@ def test_run_yang_dry_run(tmp_path, controller):
     assert (out / "log.csv").exists() and (out / "summary.json").exists()
 
 
+def test_run_yang_jeep_speed_and_start_dist(tmp_path):
+    """長程情境：直接給吉普車實際速度與起始距離（適合 1170 m 的直線路段）。"""
+    import json
+    out = run_yang.main(["--dry-run", "--time", "5", "--jeep-speed", "20", "--start-dist", "700",
+                         "--no-record", "--out", str(tmp_path)])
+    s = json.loads((out / "summary.json").read_text(encoding="utf-8"))["summary"]
+    assert s["start"] == "far"
+    assert s["jeep_speed_target"] == pytest.approx(20.0)
+    assert s["R_start_m"] == pytest.approx(700.0, abs=10.0)
+
+
 def test_step_test_dry_run(tmp_path, monkeypatch):
     monkeypatch.setitem(XP["step_test"], "steps", [0.2, 0.0])
     out, res = step_test.main(["--dry-run", "--out", str(tmp_path)])
