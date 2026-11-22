@@ -359,11 +359,16 @@ def main(argv=None):
         p0 = (st.jx, st.jy)
         print("[等待] 飛機程式已就緒，請現在在 jeep 筆電啟動 jeep_turn.py（等吉普車開始移動）...")
         t_w = clock.now()
+        prev = p0
         while math.hypot(st.jx - p0[0], st.jy - p0[1]) < 20.0:
             if clock.now() - t_w > 600:
                 raise SystemExit("等了 10 分鐘吉普車都沒有移動，結束")
             clock.sleep(0.2)
             st = link.read()
+            if math.hypot(st.jx - prev[0], st.jy - prev[1]) > 50.0:   # 0.2 s 跳 50 m 以上 = jeep_turn.py --start 搬車
+                print("[等待] 吉普車被搬到新起點，重新等它開始開")
+                p0 = (st.jx, st.jy)
+            prev = (st.jx, st.jy)
         print("[等待] 吉普車開始移動，再等 5 s 讓它加速到定速")
         clock.sleep(5.0)
         st = link.read()
