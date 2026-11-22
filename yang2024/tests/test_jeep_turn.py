@@ -66,3 +66,18 @@ def test_turn_by_distance_corner_starts_braking_early():
             start_turn = dist
     assert prof.brake_lead == pytest.approx((400 - 60) / 5.0)
     assert start_turn == pytest.approx(500.0, abs=25.0)      # 轉彎開始的位置接近指定距離
+
+
+def test_command_never_runs_far_ahead_and_waits_for_actual_turn():
+    """X-Plane 實測：轉向打滿時車只轉 9°/s，命令不能一路跑到 90°、也不能沒轉完就加速。"""
+    prof = TurnProfile("corner", 20.0, 20.0, turn_at=0.0, psi0=0.0, a_lat=3.0)
+    dt, actual, v = 0.05, 0.0, 20.0
+    for k in range(int(40 / dt)):
+        _, v_cmd, phase = prof.command(k * dt, v, dt, None, actual)
+        v += (v_cmd - v) * dt / 0.5
+        if phase in ("turn", "exit"):
+            actual = min(90.0, actual + 9.0 * dt)          # 車最多 9°/s
+        assert prof.turned <= actual + prof.lead_max + 1e-9
+        if phase == "turn":
+            assert v_cmd == pytest.approx(prof.v_turn)
+    assert phase == "exit" and actual >= 85.0

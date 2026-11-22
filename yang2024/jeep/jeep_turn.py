@@ -42,12 +42,16 @@ class TurnProfile:
     """
 
     def __init__(self, mode, v_cruise, radius, turn_at, psi0, a_lat=3.0, a_brake=2.5,
-                 turn_deg=90.0, direction="right", brake_timeout=20.0, turn_dist=None):
+                 turn_deg=90.0, direction="right", brake_timeout=20.0, turn_dist=None,
+                 a_accel=2.5, lead_max=20.0):
         if mode not in MODES:
             raise ValueError(f"mode 必須是 {MODES}")
         self.mode, self.v_cruise, self.radius = mode, float(v_cruise), float(radius)
         self.turn_at, self.psi0, self.turn_deg = float(turn_at), float(psi0), float(turn_deg)
         self.a_brake, self.brake_timeout = float(a_brake), float(brake_timeout)
+        # 2026-11-22 X-Plane 實測：航向命令跑在實際航向前面 40°+、轉到一半就加速，出彎側向 0.6 g → 加兩個限制
+        self.a_accel = float(a_accel)      # 出彎加速度上限（X-Plane 吉普車 0→25 m/s 只要 3.7 s，不真實）
+        self.lead_max = float(lead_max)    # 航向命令最多領先實際航向幾度
         self.sign = 1.0 if direction == "right" else -1.0      # 真北順時針為正 → 右轉是 +
         self.v_turn = (min(self.v_cruise, math.sqrt(a_lat * self.radius)) if mode == "corner"
                        else self.v_cruise)
@@ -62,7 +66,8 @@ class TurnProfile:
     def psi_cmd(self):
         return (self.psi0 + self.sign * self.turned) % 360.0
 
-    def command(self, t, speed, dt, dist=None):
+    def command(self, t, speed, dt, dist=None, turned_actual=None):
+        """turned_actual：實際已轉角度（右轉為正）；None = 假設完全跟上命令。"""
         if self.turn_dist is not None and dist is not None:
             trigger = dist >= self.turn_dist - self.brake_lead
         else:
@@ -78,11 +83,12 @@ class TurnProfile:
         if self.phase == "turn":
             self.v_cmd = self.v_turn
             rate = math.degrees(max(speed, 1.0) / self.radius)
-            self.turned = min(self.turn_deg, self.turned + rate * dt)
-            if self.turned >= self.turn_deg:
+            actual = self.turned if turned_actual is None else self.sign * turned_actual
+            self.turned = min(self.turn_deg, self.turned + rate * dt, max(actual, 0.0) + self.lead_max)
+            if self.turned >= self.turn_deg and actual >= self.turn_deg - 5.0:   # 真的轉完才出彎加速
                 self.phase, self.t_phase = "exit", t
         if self.phase == "exit":
-            self.v_cmd = self.v_cruise
+            self.v_cmd = min(self.v_cruise, self.v_cmd + self.a_accel * dt)
         return self.psi_cmd(), self.v_cmd, self.phase
 
 
@@ -106,6 +112,7 @@ def main():
                     help="改用距離：開到這裡（m）開始轉彎，corner 會自動提早減速；有給就不看 --turn-at")
     ap.add_argument("--a-lat", type=float, default=3.0, help="corner：彎中側向加速度上限 m/s²（3 ≈ 0.3 g）")
     ap.add_argument("--a-brake", type=float, default=2.5, help="corner：進彎減速度 m/s²")
+    ap.add_argument("--a-accel", type=float, default=2.5, help="出彎加速度上限 m/s²")
     ap.add_argument("--direction", choices=("right", "left"), default="right")
     ap.add_argument("--heading", type=float, default=None,
                     help="直線段航向（度，真北順時針）；不給 = 用吉普車擺好時的車頭方向（換跑道、停機坪不用改）")
@@ -138,7 +145,8 @@ def main():
         print(f"[航向] 沒有給 --heading，用目前車頭方向 {psi0:.1f}° 當直線段航向")
 
     prof = TurnProfile(args.mode, args.speed, radius, args.turn_at, psi0, a_lat=args.a_lat,
-                       a_brake=args.a_brake, direction=args.direction, turn_dist=args.turn_dist)
+                       a_brake=args.a_brake, direction=args.direction, turn_dist=args.turn_dist,
+                       a_accel=args.a_accel)
     when = f"{args.turn_dist:.0f} m 處" if args.turn_dist is not None else f"{args.turn_at:.0f} s 後"
     print(f"[劇本] {args.mode}：直線 {args.speed:.1f} m/s、{when}{'右' if args.direction == 'right' else '左'}轉 90°、"
           f"半徑 {radius:.0f} m、彎中速度 {prof.v_turn:.1f} m/s"
@@ -185,9 +193,11 @@ def main():
                 dist += math.hypot(st["local_x"] - prev_xz[0], st["local_z"] - prev_xz[1])
             prev_xz = (st["local_x"], st["local_z"])
 
-            psi_cmd, v_cmd, phase = prof.command(t, speed, dt, dist)
+            psi_cmd, v_cmd, phase = prof.command(t, speed, dt, dist, actual_turn)
             h_err = ctrl.heading_error(heading, psi_cmd)
             steer = ctrl.compute_rudder(h_err)
+            if abs(steer) >= ctrl.max_steer - 1e-9:      # 轉向打滿時不累積積分（避免出彎後過衝 10°）
+                ctrl._heading_integral -= h_err * ctrl.control_dt
             throttle, brake = ctrl.compute_throttle_and_brake(v_cmd - speed)
             ctrl.client.sendCTRL([0, 0, 0, throttle])
             ctrl.client.sendDREF("sim/joystick/yoke_roll_ratio", steer)
