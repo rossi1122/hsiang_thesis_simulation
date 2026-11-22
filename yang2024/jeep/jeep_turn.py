@@ -97,6 +97,24 @@ class TurnProfile:
         return self.psi_cmd(), self.v_cmd, self.phase
 
 
+START_FILE = Path(__file__).resolve().parent / "jeep_starts.json"   # 自己存的起點（--save-start）
+
+
+def load_starts():
+    import json
+    starts = dict(START_POINTS)
+    if START_FILE.exists():
+        starts.update({k: tuple(v) for k, v in json.loads(START_FILE.read_text(encoding="utf-8")).items()})
+    return starts
+
+
+def save_start(name, lat, lon, heading):
+    import json
+    data = json.loads(START_FILE.read_text(encoding="utf-8")) if START_FILE.exists() else {}
+    data[name] = [lat, lon, heading]
+    START_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def place_jeep(ctrl, lat, lon, heading, settle=3.0):
     """用 XPlaneConnect 把吉普車搬到 (lat, lon)、車頭朝 heading（不用 X-Plane 選單的起始點）。"""
     c = ctrl.client
@@ -141,8 +159,11 @@ def main():
     ap.add_argument("--max-steer", type=float, default=0.15, help="轉向命令上限（學長預設 0.15）")
     ap.add_argument("--duration", type=float, default=90.0)
     ap.add_argument("--roll-abort", type=float, default=35.0, help="車身滾轉超過幾度就停車（翻車保護）")
-    ap.add_argument("--start", choices=tuple(START_POINTS), default=None,
-                    help="先把吉普車搬到已知起點：south＝南端往北開、north＝北端往南開（不給 = 用目前位置）")
+    ap.add_argument("--start", default=None,
+                    help="先把吉普車搬到起點：south＝南端往北開、north＝北端往南開，或用 --save-start 存過的名字")
+    ap.add_argument("--save-start", default=None, metavar="NAME",
+                    help="把吉普車目前的位置存成起點 NAME 後結束（車頭方向用 --save-heading，不給就用目前車頭）")
+    ap.add_argument("--save-heading", type=float, default=None, help="--save-start 時存的車頭方向（度，真北順時針）")
     ap.add_argument("--place", type=float, nargs=3, metavar=("LAT", "LON", "HEADING"), default=None,
                     help="先把吉普車搬到指定經緯度與車頭方向")
     ap.add_argument("--hz", type=int, default=20)
@@ -155,7 +176,21 @@ def main():
     ctrl = JeepController(target_speed=args.speed, target_heading=args.heading or 0.0, control_hz=args.hz,
                           xp_host=args.host, xp_port=args.port)
     ctrl.max_steer = args.max_steer
-    target = tuple(args.place) if args.place else (START_POINTS[args.start] if args.start else None)
+    if args.save_start:
+        st0 = ctrl.get_state()
+        if st0 is None:
+            print("[錯誤] 讀不到吉普車狀態")
+            return
+        hdg = args.save_heading if args.save_heading is not None else st0["heading"]
+        save_start(args.save_start, st0["lat"], st0["lon"], hdg)
+        print(f"[存起點] {args.save_start}：({st0['lat']:.8f}, {st0['lon']:.8f})、車頭 {hdg:.1f}° → {START_FILE}")
+        print(f"         之後用 --start {args.save_start} 就會把車搬到這裡")
+        return
+    starts = load_starts()
+    if args.start and args.start not in starts:
+        print(f"[錯誤] 沒有起點「{args.start}」；可用：{', '.join(starts)}")
+        return
+    target = tuple(args.place) if args.place else (starts[args.start] if args.start else None)
     if target:
         place_jeep(ctrl, *target)
     ctrl.initialize()
