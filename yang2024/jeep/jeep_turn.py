@@ -26,6 +26,11 @@ from pathlib import Path
 
 G = 9.81
 MODES = ("curve", "corner", "noslow")
+# 已知起點（2026-11-22 實測的 1170 m 直線路段，Military Apron 旁）：(緯度, 經度, 真航向)
+START_POINTS = {
+    "south": (24.25864792, 120.63111877, 356.3),   # 南端（Military Apron 起點），往北開
+    "north": (24.26886559, 120.63037109, 176.3),   # 北端（往回 30 m，留在鋪面上），往南開
+}
 DEFAULT_RADIUS = {"curve": 200.0, "corner": 20.0, "noslow": 20.0}
 
 
@@ -92,6 +97,23 @@ class TurnProfile:
         return self.psi_cmd(), self.v_cmd, self.phase
 
 
+def place_jeep(ctrl, lat, lon, heading, settle=3.0):
+    """用 XPlaneConnect 把吉普車搬到 (lat, lon)、車頭朝 heading（不用 X-Plane 選單的起始點）。"""
+    c = ctrl.client
+    try:
+        alt = c.getDREF("sim/flightmodel/position/elevation")[0]   # 機場是平地：沿用目前高度
+    except Exception:
+        alt = -998
+    c.sendDREF("sim/flightmodel/controls/parkbrake", 1)
+    c.sendCTRL([0, 0, 0, 0])
+    c.sendPOSI([lat, lon, alt + 0.5, 0.0, 0.0, heading, 1])
+    for n in ("local_vx", "local_vy", "local_vz", "P", "Q", "R"):
+        c.sendDREF("sim/flightmodel/position/" + n, 0.0)
+    print(f"[擺放] 吉普車搬到 ({lat:.6f}, {lon:.6f})、車頭 {heading:.1f}°，等 {settle:.0f} s 落地")
+    time.sleep(settle)
+    c.sendDREF("sim/flightmodel/controls/parkbrake", 0)
+
+
 def import_jeep_controller():
     """學長的 JeepController（同時支援：在 repo 根目錄執行，或把本檔複製到 xplane_sim_jeep/ 執行）。"""
     here = Path(__file__).resolve().parent
@@ -119,6 +141,10 @@ def main():
     ap.add_argument("--max-steer", type=float, default=0.15, help="轉向命令上限（學長預設 0.15）")
     ap.add_argument("--duration", type=float, default=90.0)
     ap.add_argument("--roll-abort", type=float, default=35.0, help="車身滾轉超過幾度就停車（翻車保護）")
+    ap.add_argument("--start", choices=tuple(START_POINTS), default=None,
+                    help="先把吉普車搬到已知起點：south＝南端往北開、north＝北端往南開（不給 = 用目前位置）")
+    ap.add_argument("--place", type=float, nargs=3, metavar=("LAT", "LON", "HEADING"), default=None,
+                    help="先把吉普車搬到指定經緯度與車頭方向")
     ap.add_argument("--hz", type=int, default=20)
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=49009)
@@ -129,6 +155,9 @@ def main():
     ctrl = JeepController(target_speed=args.speed, target_heading=args.heading or 0.0, control_hz=args.hz,
                           xp_host=args.host, xp_port=args.port)
     ctrl.max_steer = args.max_steer
+    target = tuple(args.place) if args.place else (START_POINTS[args.start] if args.start else None)
+    if target:
+        place_jeep(ctrl, *target)
     ctrl.initialize()
     psi0 = args.heading
     if psi0 is None:
