@@ -715,6 +715,12 @@ def main(argv=None):
             clock.sleep(tick - (clock.now() - now))
     except KeyboardInterrupt:
         print("\n[Yang X-Plane] 使用者中斷")
+    except SystemError as exc:
+        # Ctrl+C 剛好按在 IPOPT 求解中：CasADi 會包成 SystemError（2026-11-22 第 3 次基準）。其他 SystemError 照常丟出
+        if "KeyboardInterrupt" not in repr(exc) and "KeyboardInterrupt" not in repr(exc.__context__) \
+                and "Function_call" not in str(exc):
+            raise
+        print("\n[Yang X-Plane] 使用者中斷（Ctrl+C 時 MPC 正在求解）")
     finally:
         link.pause(True)
         if overlay is not None:
