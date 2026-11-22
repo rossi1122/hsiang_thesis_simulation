@@ -52,3 +52,17 @@ def test_noslow_and_left_turn():
 def test_bad_mode():
     with pytest.raises(ValueError):
         TurnProfile("drift", 20.0, 20.0, 5.0, 0.0)
+
+
+def test_turn_by_distance_corner_starts_braking_early():
+    prof = TurnProfile("corner", 20.0, 20.0, turn_at=999.0, psi0=356.0, a_lat=3.0, a_brake=2.5, turn_dist=500.0)
+    v, dist, dt = 20.0, 0.0, 0.05
+    start_turn = None
+    for k in range(int(60 / dt)):
+        _, v_cmd, phase = prof.command(k * dt, v, dt, dist)
+        v += (v_cmd - v) * dt / 0.3
+        dist += v * dt
+        if phase == "turn" and start_turn is None:
+            start_turn = dist
+    assert prof.brake_lead == pytest.approx((400 - 60) / 5.0)
+    assert start_turn == pytest.approx(500.0, abs=25.0)      # 轉彎開始的位置接近指定距離

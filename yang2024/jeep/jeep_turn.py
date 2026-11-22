@@ -42,7 +42,7 @@ class TurnProfile:
     """
 
     def __init__(self, mode, v_cruise, radius, turn_at, psi0, a_lat=3.0, a_brake=2.5,
-                 turn_deg=90.0, direction="right", brake_timeout=20.0):
+                 turn_deg=90.0, direction="right", brake_timeout=20.0, turn_dist=None):
         if mode not in MODES:
             raise ValueError(f"mode 必須是 {MODES}")
         self.mode, self.v_cruise, self.radius = mode, float(v_cruise), float(radius)
@@ -55,12 +55,19 @@ class TurnProfile:
         self.v_cmd = self.v_cruise
         self.turned = 0.0           # 航向命令已經轉了幾度
         self.t_phase = 0.0
+        # 用距離觸發：在 turn_dist 公尺處開始轉彎；corner 要提早 (v² − v_turn²)/(2·a_brake) 開始減速
+        self.turn_dist = turn_dist
+        self.brake_lead = (self.v_cruise ** 2 - self.v_turn ** 2) / (2 * self.a_brake)
 
     def psi_cmd(self):
         return (self.psi0 + self.sign * self.turned) % 360.0
 
-    def command(self, t, speed, dt):
-        if self.phase == "straight" and t >= self.turn_at:
+    def command(self, t, speed, dt, dist=None):
+        if self.turn_dist is not None and dist is not None:
+            trigger = dist >= self.turn_dist - self.brake_lead
+        else:
+            trigger = t >= self.turn_at
+        if self.phase == "straight" and trigger:
             self.phase = "brake" if self.v_turn < self.v_cruise - 0.5 else "turn"
             self.t_phase = t
         if self.phase == "brake":
@@ -95,6 +102,8 @@ def main():
     ap.add_argument("--speed", type=float, default=20.0, help="直線速度 m/s")
     ap.add_argument("--radius", type=float, default=None, help="轉彎半徑 m（預設 curve 200、其他 20）")
     ap.add_argument("--turn-at", type=float, default=30.0, help="開始轉彎（或開始減速）的時間 s")
+    ap.add_argument("--turn-dist", type=float, default=None,
+                    help="改用距離：開到這裡（m）開始轉彎，corner 會自動提早減速；有給就不看 --turn-at")
     ap.add_argument("--a-lat", type=float, default=3.0, help="corner：彎中側向加速度上限 m/s²（3 ≈ 0.3 g）")
     ap.add_argument("--a-brake", type=float, default=2.5, help="corner：進彎減速度 m/s²")
     ap.add_argument("--direction", choices=("right", "left"), default="right")
@@ -129,8 +138,9 @@ def main():
         print(f"[航向] 沒有給 --heading，用目前車頭方向 {psi0:.1f}° 當直線段航向")
 
     prof = TurnProfile(args.mode, args.speed, radius, args.turn_at, psi0, a_lat=args.a_lat,
-                       a_brake=args.a_brake, direction=args.direction)
-    print(f"[劇本] {args.mode}：直線 {args.speed:.1f} m/s、{args.turn_at:.0f} s 後{'右' if args.direction == 'right' else '左'}轉 90°、"
+                       a_brake=args.a_brake, direction=args.direction, turn_dist=args.turn_dist)
+    when = f"{args.turn_dist:.0f} m 處" if args.turn_dist is not None else f"{args.turn_at:.0f} s 後"
+    print(f"[劇本] {args.mode}：直線 {args.speed:.1f} m/s、{when}{'右' if args.direction == 'right' else '左'}轉 90°、"
           f"半徑 {radius:.0f} m、彎中速度 {prof.v_turn:.1f} m/s"
           f"（側向加速度 {prof.v_turn ** 2 / radius / G:.2f} g）")
 
@@ -175,7 +185,7 @@ def main():
                 dist += math.hypot(st["local_x"] - prev_xz[0], st["local_z"] - prev_xz[1])
             prev_xz = (st["local_x"], st["local_z"])
 
-            psi_cmd, v_cmd, phase = prof.command(t, speed, dt)
+            psi_cmd, v_cmd, phase = prof.command(t, speed, dt, dist)
             h_err = ctrl.heading_error(heading, psi_cmd)
             steer = ctrl.compute_rudder(h_err)
             throttle, brake = ctrl.compute_throttle_and_brake(v_cmd - speed)
@@ -224,7 +234,7 @@ def main():
     if aborted:
         print(f"  ⚠️ 中止：{aborted}")
     if stats["t_turn_start"] is None:
-        print("  還沒開始轉彎就結束了（--duration 要比 --turn-at 長）")
+        print("  這次沒有轉彎（量長度的直線測試是正常的；要轉彎時 --duration 要夠長）")
     else:
         dur = (stats["t_turn_end"] - stats["t_turn_start"]) if stats["t_turn_end"] else float("nan")
         print(f"  開始轉彎時速度 {stats['v_turn_start']:.1f} m/s；轉彎期間最低速度 {stats['v_min']:.1f} m/s")
