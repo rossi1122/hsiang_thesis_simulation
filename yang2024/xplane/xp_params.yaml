@@ -53,9 +53,9 @@ gimbal:
 gate:
   enabled: true
   gate_deg: 8.0              # 偵測方向和預測方向夾角的門檻
-  growth_deg_per_s: 15.0     # 跟丟越久門檻越寬（每秒放寬 15°）
-  gate_max_deg: 45.0
-  confirm_n: 3               # 跟丟 ≥ confirm_after_s 後，同一新位置連續 3 張才重新抓回
+  growth_deg_per_s: 3.0      # 跟丟越久門檻越寬（每秒放寬 3°；2026-11-22 實測推算每秒只偏約 2°，15° 太寬、放進了錯框）
+  gate_max_deg: 20.0
+  confirm_n: 6               # 跟丟 ≥ confirm_after_s 後，同一新位置連續 6 張（約 0.5 s）才重新抓回
   confirm_after_s: 1.0
   confirm_deg: 3.0
   static_px: 5.0             # 相機轉了 > static_rot_deg、像素卻動不到 5 px → 固定在螢幕上的東西

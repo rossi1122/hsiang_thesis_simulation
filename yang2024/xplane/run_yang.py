@@ -254,7 +254,7 @@ def run_checks(rec, params, v_jeep, R0_target):
     if ok.sum() > 10 and t[ok][-1] - t[ok][0] > 1.0:
         v_run = float(math.hypot(jx[ok][-1] - jx[ok][0], jy[ok][-1] - jy[ok][0]) / (t[ok][-1] - t[ok][0]))
         if abs(v_run - v_jeep) > 0.1 * v_jeep:
-            print(f"[檢查] ⚠️ 飛行中吉普車平均 {v_run:.1f} m/s，和應有的 {v_jeep:.1f} m/s 差超過 10%：這次結果不能和論文比")
+            print(f"[檢查] ⚠️ 飛行中吉普車平均 {v_run:.1f} m/s，和應有的 {v_jeep:.1f} m/s 差超過 10%：直線情境表示 --speed 打錯；有轉彎減速（jeep_turn.py corner）時是正常的")
     R0 = float(R[np.isfinite(R)][0]) if np.isfinite(R).any() else float("nan")
     print(f"[檢查] 吉普車飛行中平均 {v_run:.2f} m/s（應為 {v_jeep:.2f}）；起始水平距離 {R0:.0f} m（應為 {R0_target:.0f} m）")
     return {"jeep_speed_run": v_run, "R_start_m": R0, "R_start_target_m": R0_target}

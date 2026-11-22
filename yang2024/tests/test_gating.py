@@ -21,11 +21,15 @@ def test_accepts_close_rejects_far_jump():
 
 def test_gate_widens_while_lost_and_reacquires_consistent_target():
     g = MeasurementGate()
-    assert g.threshold(2.0) == pytest.approx(8.0 + 30.0)
-    # 跟丟 1.2 s、預測偏了 50°：同一個新方向連續 3 張 → 重新抓回
+    assert g.threshold(2.0) == pytest.approx(8.0 + 6.0)
+    assert g.threshold(10.0) == pytest.approx(20.0)
+    # 2026-11-22 右轉實驗 59.7 s：跟丟 1.5 s 時錯框偏 21.8° → 不能採用
+    assert not g.check(los(21.8), los(0.0), lost_s=1.5)
+    # 跟丟 1.2 s、預測偏了 50°：同一個新方向連續 6 張 → 重新抓回
+    g = MeasurementGate()
     res = [g.check(los(50.0 + 0.2 * i), los(0.0), lost_s=1.2 + 0.08 * i,
-                   pixel=(100.0 + 20 * i, 0.0), cam_axis=los(0.0)) for i in range(3)]
-    assert res == [False, False, True] and g.last_reason == "reacquired"
+                   pixel=(100.0 + 20 * i, 0.0), cam_axis=los(0.0)) for i in range(6)]
+    assert res == [False] * 5 + [True] and g.last_reason == "reacquired"
 
 
 def test_screen_fixed_object_is_not_reacquired():

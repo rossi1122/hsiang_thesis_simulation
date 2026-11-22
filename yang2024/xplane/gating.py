@@ -22,7 +22,7 @@ def angle_deg(a, b):
 
 
 class MeasurementGate:
-    def __init__(self, gate_deg=8.0, growth_deg_per_s=15.0, gate_max_deg=45.0, confirm_n=3,
+    def __init__(self, gate_deg=8.0, growth_deg_per_s=3.0, gate_max_deg=20.0, confirm_n=6,
                  confirm_after_s=1.0, confirm_deg=3.0, static_px=5.0, static_rot_deg=2.0):
         self.gate_deg, self.growth, self.gate_max = gate_deg, growth_deg_per_s, gate_max_deg
         self.confirm_n, self.confirm_after_s, self.confirm_deg = confirm_n, confirm_after_s, confirm_deg
