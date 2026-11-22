@@ -38,6 +38,7 @@ hinge_eps: 1.0e-3  # 補：β·max{x,0} 的平滑寬度（相對值）；0 = 照
 gimbal_lambda: [0.5, 0.5]       # λu、λv（前作 HIL：P_e 全部元素 0.5）
 gimbal_tilt_range: [-1.55, 0.17] # θ_t 範圍 [rad]（2024 Section 5.1）
 gimbal_rate_max: 3.0             # 補：雲台最大角速度 [rad/s]，數值模擬只當保護用
+gimbal_acc_max: null              # 補：雲台最大角加速度 [rad/s²]；null = 不限（Phase 1 結果用這個）
 
 # ---------- LSM 對照組（前作 Yang 2021 JIRS Eq. 13–17） ----------
 lsm_lambda: [0.5, 0.5]  # λ1、λ2

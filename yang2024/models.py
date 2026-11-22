@@ -32,6 +32,8 @@ class Gimbal:
         self.lam_u, self.lam_v = params["gimbal_lambda"]
         self.tilt_min, self.tilt_max = params["gimbal_tilt_range"]
         self.rate_max = params["gimbal_rate_max"]
+        self.acc_max = params.get("gimbal_acc_max") or 0.0     # rad/s²；0 = 不限（舊行為）
+        self.rate_act = [0.0, 0.0]
         self.f = params["f"]
         self.dt = params["dt"]
 
@@ -42,6 +44,11 @@ class Gimbal:
                 np.clip(ut, -self.rate_max, self.rate_max))
 
     def step(self, u_p, u_t):
+        if self.acc_max > 0:   # 真實雲台的角加速度限制（2026-11-22）
+            for i, u in enumerate((u_p, u_t)):
+                d = float(np.clip(u - self.rate_act[i], -self.acc_max * self.dt, self.acc_max * self.dt))
+                self.rate_act[i] = float(np.clip(self.rate_act[i] + d, -self.rate_max, self.rate_max))
+            u_p, u_t = self.rate_act
         self.pan = wrap_angle(self.pan + u_p * self.dt)
         self.tilt = float(np.clip(self.tilt + u_t * self.dt, self.tilt_min, self.tilt_max))
 

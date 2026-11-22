@@ -45,6 +45,21 @@ gimbal:
   yaw_limit_deg: 160.0       # 水平 ±160°
   pitch_limit_deg: [-135.0, 45.0]   # 俯仰 −135°～+45°（−90° 是垂直朝下，可以再往後翻 45°）
   roll_limit_deg: 30.0       # 滾轉 ±30°（看正前方時，飛機坡度超過 30° 的部分會漏到畫面上）
+  # 2026-11-22：真實雲台的轉速限制（老師：相機轉太快不合理）。暫定值，量完實機 SIYI A8 mini 再換；
+  # --gimbal-unlimited 回到舊行為（只有 gimbal_rate_max = 172 °/s 的保護）
+  rate_limit_dps: 60.0
+  acc_limit_dps2: 120.0
+# 2026-11-22：YOLO 量測合理性檢查（gating.py）；--no-gate 關掉
+gate:
+  enabled: true
+  gate_deg: 8.0              # 偵測方向和預測方向夾角的門檻
+  growth_deg_per_s: 15.0     # 跟丟越久門檻越寬（每秒放寬 15°）
+  gate_max_deg: 45.0
+  confirm_n: 3               # 跟丟 ≥ confirm_after_s 後，同一新位置連續 3 張才重新抓回
+  confirm_after_s: 1.0
+  confirm_deg: 3.0
+  static_px: 5.0             # 相機轉了 > static_rot_deg、像素卻動不到 5 px → 固定在螢幕上的東西
+  static_rot_deg: 2.0
 lost_target:
   enabled: true              # 偵測不到時：用 Eq. 10 + 實測航向變化率推算 s2，雲台對準推算的方向（不做定位）
   truth_fov_check: true      # truth 模式下目標超出畫面也算偵測不到（和真實相機一致）

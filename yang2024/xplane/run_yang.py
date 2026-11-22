@@ -48,6 +48,7 @@ from ..gimbal_model import GimbalModel
 from ..mpc import Switcher, YangMPC
 from .autopilot import BankToTurnAutopilot
 from .camera import XPCamera
+from .gating import MeasurementGate, rate_limit
 from .common import add_profile_arg, jeep_speed_target, Recorder, output_dir, save_json, setup, wait_for_jeep
 from .xp_link import import_senior, place_relative_to_jeep
 
@@ -147,6 +148,9 @@ def tracking_stats(rec, mpc):
     lost = rec.column("lost_s")
     sat = rec.column("gimbal_sat")
     cam_roll = rec.column("cam_roll")
+    rej = rec.column("gate_reject")[mpc]
+    pr_act = np.degrees(np.abs(rec.column("pan_rate_act")))
+    tr_act = np.degrees(np.abs(rec.column("tilt_rate_act")))
     episodes = 0
     if lost.size:
         was = False
@@ -162,6 +166,10 @@ def tracking_stats(rec, mpc):
         "lost_episodes_over_0p5s": int(episodes),
         "gimbal_sat_ratio": float(np.nanmean(sat)) if sat.size else None,
         "cam_roll_max_deg": float(np.nanmax(np.abs(cam_roll))) if cam_roll.size else None,
+        "gate_reject_ratio": float(np.nanmean(rej)) if rej.size and np.isfinite(rej).any() else None,
+        "gimbal_pan_rate_max_dps": float(np.nanmax(pr_act)) if np.isfinite(pr_act).any() else None,
+        "gimbal_pan_rate_rms_dps": float(np.sqrt(np.nanmean(pr_act ** 2))) if np.isfinite(pr_act).any() else None,
+        "gimbal_tilt_rate_max_dps": float(np.nanmax(tr_act)) if np.isfinite(tr_act).any() else None,
     }
 
 
@@ -279,6 +287,10 @@ def main(argv=None):
                     help="直接給吉普車實際速度 m/s（例如 20、25；覆寫 --vc）。要和 jeep 筆電的 --speed 一致")
     ap.add_argument("--start-dist", type=float, default=None,
                     help="飛機起始在吉普車正後方幾公尺（實際距離，例如 700；會自動用 far 起始）")
+    ap.add_argument("--no-gate", action="store_true",
+                    help="關掉 YOLO 量測合理性檢查（預設改良版會開，見 gating.py）")
+    ap.add_argument("--gimbal-unlimited", action="store_true",
+                    help="雲台不加真實轉速／角加速度限制（舊行為，最快 172 °/s）")
     ap.add_argument("--wait-jeep", action="store_true",
                     help="先開飛機程式、等吉普車開始移動（離原位 > 20 m）再等 5 s 加速後才擺放飛機，"
                          "減少吉普車在等待期間用掉的路段")
@@ -315,6 +327,16 @@ def main(argv=None):
     lost_cfg = xp.get("lost_target", {})
     lost_handling = enhanced and lost_cfg.get("enabled", True)
     fov_check = enhanced and lost_cfg.get("truth_fov_check", True)
+    gate = (MeasurementGate.from_config(xp.get("gate")) if lost_handling and not args.no_gate
+            and xp.get("gate", {}).get("enabled", True) else None)
+    gcfg = xp.get("gimbal", {})
+    if enhanced and not args.gimbal_unlimited and gcfg.get("rate_limit_dps"):
+        g_rate_max = math.radians(gcfg["rate_limit_dps"])
+        g_acc_max = math.radians(gcfg.get("acc_limit_dps2", 0.0))
+    else:
+        g_rate_max, g_acc_max = rate_max, 0.0
+    print(f"[設定] 量測合理性檢查 {'開' if gate else '關'}；雲台轉速上限 {math.degrees(g_rate_max):.0f} °/s、"
+          f"角加速度上限 {math.degrees(g_acc_max):.0f} °/s²{'（不限）' if not g_acc_max else ''}")
     print(f"[設定] {'改良版' if enhanced else 'Yang 2024 原版'}：雲台 {gimbal.mode}"
           f"{'（SIYI A8 mini 跟隨模式，三軸增穩）' if follow else '（兩軸、相對機身）'}、"
           f"跟丟處理 {'開' if lost_handling else '關'}")
@@ -478,6 +500,8 @@ def main(argv=None):
     yolo_ts = float("nan")
     u2 = v2 = u3 = v3 = g1 = np.nan
     meas_valid, predicted = 0, 0
+    gate_reject, gate_angle = 0, float("nan")
+    g_rate = [0.0, 0.0]               # 雲台實際角速度（經過轉速、角加速度限制）
     if lost_handling:
         # 起始時雲台已對準吉普車（目標在畫面中心）：用它當 s2 的初值，第一次偵測前的推算才有正確的起點
         # （2026-11-18 改良版 YOLO E1：第一步還沒偵測到時從 s2 = (0, 0) 推算，畫面特徵在 t = 0 跳到 v1 ≈ 4972 px）
@@ -546,6 +570,22 @@ def main(argv=None):
                         meas = cam.to_centered(res.raw_center_x, res.raw_center_y)
                         last_meas_ts = res.timestamp
                 los_w = None
+                gate_reject, gate_angle = 0, float("nan")
+                if meas is not None and gate is not None:
+                    # ---------- 1b. 量測合理性檢查：偵測方向 vs 預測方向（Eq. 10 推算，不做定位）
+                    ray_m = geo.ray_level_from_pixel(meas[0], meas[1], C_cap, f)
+                    los_m = geo.rot_z(psi_cap) @ ray_m
+                    u2p, v2p = s2_last
+                    z = depth_of(v2p)
+                    if np.isfinite(z) and z > 0:
+                        du, dv = geo.image_model(u2p, v2p, st.psi_rate, V, alpha, f, z)
+                        u2p, v2p = u2p + du * dt_m, v2p + dv * dt_m
+                    los_p = geo.rot_z(st.psi) @ geo.ideal_ray_level(u2p, v2p, f, alpha)
+                    axis = geo.rot_z(psi_cap) @ np.asarray(C_cap)[2]
+                    ok_gate = gate.check(los_m, los_p, now - last_meas_t, pixel=meas, cam_axis=axis)
+                    gate_angle = gate.last_angle
+                    if not ok_gate:
+                        meas, gate_reject = None, 1
                 if meas is not None:
                     # ---------- 2a. 有量測：換成 Ideal State（Eq. 7、15）
                     s1 = meas
@@ -626,6 +666,8 @@ def main(argv=None):
                                        f"{'  SATURATED' if ginfo.get('saturated') else ''}"
                                        f"{'  (flipped)' if ginfo.get('flipped') else ''}")
                 lost_txt = f"  LOST {lost_s:.1f} s (predicting)" if predicted else ""
+                if gate_reject:
+                    lost_txt += f"  REJECTED {gate_angle:.0f} deg"
                 if vision is not None:
                     res, _ = vision[1].get_latest()
                     upd.update(bbox=res.bbox if res.detected else None, conf=res.confidence,
@@ -638,9 +680,13 @@ def main(argv=None):
 
             # 雲台：依真實經過時間積分，再換成相機姿態送出
             if follow:
-                g[0] = geo.wrap(g[0] + rates[0] * dt)
-                g[1] = float(np.clip(g[1] + rates[1] * dt, -math.pi / 2, math.pi / 4))
+                # 真實雲台：角速度、角加速度有上限（2026-11-19 老師：相機轉太快不合理）
+                g_rate[0] = rate_limit(g_rate[0], rates[0], g_rate_max, g_acc_max, dt)
+                g_rate[1] = rate_limit(g_rate[1], rates[1], g_rate_max, g_acc_max, dt)
+                g[0] = geo.wrap(g[0] + g_rate[0] * dt)
+                g[1] = float(np.clip(g[1] + g_rate[1] * dt, -math.pi / 2, math.pi / 4))
             else:
+                g_rate[0], g_rate[1] = rates[0], rates[1]
                 g[0] = geo.wrap(g[0] + rates[0] * dt)
                 g[1] = float(np.clip(g[1] + rates[1] * dt, tilt_min, tilt_max))
             pan, tilt, ginfo = command_gimbal(st)
@@ -661,6 +707,8 @@ def main(argv=None):
                     meas_valid=meas_valid, predicted=predicted, lost_s=lost_s,
                     u1=s1[0], v1=s1[1], u1_truth=ut1, v1_truth=vt1, u2=u2, v2=v2, u3=u3, v3=v3, g1=g1,
                     pan=pan, tilt=tilt, pan_rate=rates[0], tilt_rate=rates[1],
+                    pan_rate_act=g_rate[0], tilt_rate_act=g_rate[1],
+                    gate_reject=gate_reject if mpc_tick else np.nan, gate_angle=gate_angle if mpc_tick else np.nan,
                     joint_yaw=jy_, joint_roll=jr_, joint_pitch=jp_,
                     gimbal_sat=int(ginfo["saturated"]), gimbal_flip=int(ginfo["flipped"]),
                     cam_roll=math.degrees(ginfo["cam_roll"]))
@@ -680,7 +728,9 @@ def main(argv=None):
             summary = summarize(rec, params, k, dt_mpc)
             summary.update(profile=xp["profile"], controller=args.controller, measure=args.measure,
                            setup="enhanced" if enhanced else "yang_original", gimbal_mode=gimbal.mode,
-                           lost_handling=lost_handling, truth_fov_check=fov_check,
+                           lost_handling=lost_handling, truth_fov_check=fov_check, gate=gate is not None,
+                           gimbal_rate_limit_dps=math.degrees(g_rate_max),
+                           gimbal_acc_limit_dps2=math.degrees(g_acc_max),
                            start=xp["scenario"]["start"], vc_paper=xp["scenario"]["jeep_speed_paper"],
                            jeep_speed_target=v_jeep, jeep_speed_paused_probe=v_meas,
                            **run_checks(rec, params, v_jeep, start_distance(xp, k, params)))
@@ -694,7 +744,8 @@ def main(argv=None):
                         "u_sat_ratio", "psi_rate_tracking_rms", "agl_max_err_m", "roll_max_deg",
                         "elevator_std", "yolo_detect_ratio", "yolo_fps", "yolo_age_ms_mean", "yolo_err_px_rms",
                         "meas_valid_ratio", "predicted_ratio", "lost_max_s", "lost_episodes_over_0p5s",
-                        "gimbal_sat_ratio", "cam_roll_max_deg"):
+                        "gimbal_sat_ratio", "cam_roll_max_deg", "gate_reject_ratio",
+                        "gimbal_pan_rate_max_dps", "gimbal_pan_rate_rms_dps", "gimbal_tilt_rate_max_dps"):
                 if summary.get(key) is None:
                     continue
                 print(f"  {key:24s} {summary[key]}")

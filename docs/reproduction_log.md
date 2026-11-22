@@ -519,3 +519,12 @@ V_c = 10 時三者都會反覆超出 R_M（切換式 14%、P1,soft 22–26%、LS
   轉向打滿時不累積積分（防止過衝）。下一步用 `--max-steer 0.4` 測能否做到 20 m 半徑。
 - 修正版腳本 + `--max-steer 0.4`（2026-11-22 15:52）：彎中 8.1 → 6.6 m/s、實際半徑 **21 m**、側向 0.31 g、轉 +91°（無過衝）、
   轉滿 85° 花 4.7 s、車身滾轉 0.7° → **路口右轉劇本定案**：`--mode corner --speed 20 --radius 20 --max-steer 0.4`。
+
+### 量測合理性檢查＋雲台轉速限制（2026-11-22，`gating.py`、`run_yang.py`、`xp_params.yaml`、`models.py`）
+- 起因：(1) 第一次 700 m 追蹤實驗 YOLO 從 t = 0 框到固定在螢幕左上的東西 (−763, −341) px，雲台轉圈、飛機往西偏；
+  (2) 右轉實驗 50.7 s YOLO 錯框一張（偏 609 px ≈ 21°），雲台以 166 °/s 甩開、跟丟 3.3 s。
+- 量測閘門：偵測視線 vs 預測視線（s₂ 以 Eq. 10 + 實測 ψ̇ 推算，不做定位）夾角 ≤ 8°（每跟丟 1 s 放寬 15°，上限 45°）才採用；
+  跟丟 ≥ 1 s 且同一新方向連續 3 張 → 重新抓回；相機轉 > 2° 但像素動 < 5 px → 判定螢幕固定物。上面兩次錯框（27°、21°）都會被擋下。
+- 雲台：轉速上限 60 °/s、角加速度上限 120 °/s²（暫定，待實機 SIYI A8 mini 量測）；舊行為只有 172 °/s 保護。
+- 開關：`--no-gate`、`--gimbal-unlimited`；數值模擬 `gimbal_acc_max`（預設 null = 不限，Phase 1 結果不變）。
+- summary 新增 gate_reject_ratio、gimbal_pan_rate_max/rms_dps、gimbal_tilt_rate_max_dps；log 新增 gate_reject、gate_angle、pan/tilt_rate_act。
