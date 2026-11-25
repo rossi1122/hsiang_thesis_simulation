@@ -1,0 +1,60 @@
+"""analyze_turn：用合成的 log 檢查兩個指標的計算。"""
+import csv
+import math
+
+import numpy as np
+import pytest
+
+from yang2024.xplane.analyze_turn import load_log, main, turn_metrics
+
+
+def make_log(path, dt=0.02, T=70.0):
+    """吉普車 20 m/s → 40 s 起以 2.5 m/s² 減速到 7 → 48 s 起加速回 20 → 65 s 停車。
+    R：60 s 前從 700 線性降到 120（45 s），再升到 320（55 s）；42–44 s 跟丟。"""
+    t = np.arange(0, T, dt)
+    v = np.full_like(t, 20.0)
+    v[(t >= 40) & (t < 45.2)] = 20 - 2.5 * (t[(t >= 40) & (t < 45.2)] - 40)
+    v[(t >= 45.2) & (t < 48)] = 7.0
+    m = (t >= 48) & (t < 53.2)
+    v[m] = 7 + 2.5 * (t[m] - 48)
+    v[t >= 65] = 0.0
+    jx = np.concatenate([[0], np.cumsum(v[:-1] * dt)])
+    jy = np.zeros_like(t)
+    R = np.interp(t, [0, 45, 55, 70], [700, 120, 320, 320])
+    valid = np.ones_like(t)
+    valid[(t >= 42) & (t < 44)] = 0
+    roll = np.where((t > 45) & (t < 52), 47.0, 5.0)
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["t", "jx", "jy", "R_truth", "meas_valid", "roll", "pan_rate_act"])
+        for row in zip(t, jx, jy, R, valid, roll, np.zeros_like(t)):
+            w.writerow([f"{x:.4f}" for x in row])
+    return path
+
+
+def test_turn_metrics_synthetic(tmp_path):
+    log = load_log(make_log(tmp_path / "log.csv"))
+    r, _ = turn_metrics(log, band=(150, 300), after=5.0, name="syn")
+    assert r["t_brake"] == pytest.approx(40.0, abs=0.6)
+    assert r["jeep_v_min"] == pytest.approx(7.0, abs=0.5)
+    assert r["R_min"] == pytest.approx(120.0, abs=1.0)
+    assert r["t_end"] == pytest.approx(r["t_recover"] + 5.0, abs=0.05)
+    # R < 150：R 由 700→120（0–45 s）、120→320（45–55 s）；< 150 約 42.7–46.5 s
+    assert r["below_band_s"] == pytest.approx(46.5 - 42.67, abs=0.2)
+    # R > 300 從 54 s 起到時間窗結束
+    assert r["above_band_s"] == pytest.approx(r["t_end"] - 54.0, abs=0.2)
+    assert r["out_of_band_s"] == pytest.approx(r["below_band_s"] + r["above_band_s"], abs=1e-6)
+    assert r["longest_loss_turn_s"] == pytest.approx(2.0, abs=0.05)
+    assert r["max_bank_turn_deg"] == pytest.approx(47.0)
+    # 停車（65 s）之後不算
+    assert r["t_stop"] == pytest.approx(65.0, abs=0.6)
+
+
+def test_cli_writes_outputs(tmp_path):
+    p1 = make_log(tmp_path / "a.csv")
+    p2 = make_log(tmp_path / "b.csv")
+    out = tmp_path / "out"
+    main([str(p1), str(p2), "--out", str(out)])
+    assert (out / "turn_metrics.md").exists() and (out / "turn_compare.png").exists()
+    text = (out / "turn_metrics.md").read_text(encoding="utf-8")
+    assert "指標一" in text and "指標二" in text and "Run 2" in text
