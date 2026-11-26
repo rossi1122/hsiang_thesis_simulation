@@ -257,9 +257,17 @@ def main(argv=None):
     table = summary_table(results)
     (out / "turn_metrics.md").write_text(table + "\n", encoding="utf-8")
     (out / "turn_metrics.json").write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
-    plot(results, series, out / "turn_compare.png", band=tuple(a.band))
     print(table)
-    print(f"\n已存：{out / 'turn_metrics.md'}、{out / 'turn_metrics.json'}、{out / 'turn_compare.png'}")
+    png = out / "turn_compare.png"
+    try:
+        plot(results, series, png, band=tuple(a.band))
+    except OSError as e:
+        # Windows：舊的 png 被看圖程式開著（或被同步軟體鎖住）時無法覆蓋 → 改存新檔名
+        import time
+        png = out / f"turn_compare_{time.strftime('%H%M%S')}.png"
+        print(f"\n⚠️ 無法覆蓋 turn_compare.png（{e}）；可能是圖片還開著。改存成 {png.name}")
+        plot(results, series, png, band=tuple(a.band))
+    print(f"\n已存：{out / 'turn_metrics.md'}、{out / 'turn_metrics.json'}、{png}")
 
 
 if __name__ == "__main__":
