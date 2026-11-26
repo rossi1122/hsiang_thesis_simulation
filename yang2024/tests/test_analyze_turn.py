@@ -47,6 +47,8 @@ def test_turn_metrics_synthetic(tmp_path):
     assert r["above_band_s"] == pytest.approx(r["t_end"] - 54.0, abs=0.2)
     assert r["out_of_band_s"] == pytest.approx(r["below_band_s"] + r["above_band_s"], abs=1e-6)
     assert r["longest_loss_turn_s"] == pytest.approx(2.0, abs=0.05)
+    assert r["longest_loss_after_brake_s"] == pytest.approx(2.0, abs=0.05)
+    assert r["R_at_brake"] == pytest.approx(700 - 580 * 40 / 45, abs=8.0)
     assert r["max_bank_turn_deg"] == pytest.approx(47.0)
     # 停車（65 s）之後不算
     assert r["t_stop"] == pytest.approx(65.0, abs=1.2)      # 2 s 平滑 → 晚約 1 s
@@ -70,3 +72,23 @@ def test_wall_clock_time_and_noisy_speed(tmp_path):
     assert r["jeep_v_min"] < 9.0
     assert r["R_min"] == pytest.approx(120.0, abs=1.0)
     assert r["max_bank_turn_deg"] == pytest.approx(47.0)
+
+
+def test_above_band_only_after_entering(tmp_path):
+    """減速時飛機還在 300 m 外（追近中）→ 那段不算「被甩出去」；跟丟發生在出彎之後也要算進指標二。"""
+    import csv as _csv
+    p = make_log(tmp_path / "log.csv")
+    rows = list(_csv.reader(open(p)))
+    head, data = rows[0], rows[1:]
+    iR, iv, it = head.index("R_truth"), head.index("meas_valid"), head.index("t")
+    for r in data:
+        t = float(r[it])
+        r[iR] = f"{np.interp(t, [0, 42, 45, 55, 70], [700, 360, 120, 250, 250]):.4f}"   # 減速(40 s)時 R≈390
+        r[iv] = "0" if 58.0 <= t < 61.0 else "1"                                        # 出彎後跟丟 3 s
+    with open(p, "w", newline="") as f:
+        _csv.writer(f).writerows([head] + data)
+    r, _ = turn_metrics(load_log(p), band=(150, 300), after=5.0)
+    assert r["R_at_brake"] > 300
+    assert r["above_band_s"] == pytest.approx(0.0, abs=1e-9)
+    assert r["longest_loss_turn_s"] == pytest.approx(0.0, abs=1e-9)
+    assert r["longest_loss_after_brake_s"] == pytest.approx(3.0, abs=0.05)

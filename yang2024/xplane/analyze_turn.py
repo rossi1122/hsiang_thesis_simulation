@@ -1,7 +1,8 @@
 """路口右轉實驗的兩個主要指標（用 run_yang 的 log.csv 離線計算，不需要 X-Plane）。
 
 指標一：轉彎期間，距離 R 跑出追蹤範圍 [R_d, R_M]（尺度版 150–300 m）的時間
-指標二：最長連續跟丟時間（meas_valid = 0；閘門擋掉的偵測也算跟丟）
+        （R < 150 全算；R > 300 只算飛機已進入範圍之後，減速時還在追近的那段不算）
+指標二：吉普車開始減速之後（到資料結束）的最長連續跟丟時間（meas_valid = 0；閘門擋掉的也算）
 
 轉彎時間窗：吉普車開始減速 → 回到原速後再加 --after 秒；吉普車停車（< 1 m/s）之後的資料不採用。
 吉普車速度由真值位置 (jx, jy) 差分得到。
@@ -110,7 +111,7 @@ def time_where(t, mask):
     if len(t) < 2:
         return 0.0
     dt = np.diff(t, append=t[-1])
-    return float(np.sum(dt[mask]))
+    return float(np.sum(dt[np.asarray(mask, bool)]))
 
 
 def longest_run(t, mask):
@@ -135,27 +136,43 @@ def turn_metrics(log, band=(150.0, 300.0), after=5.0, name=""):
     roll = log["roll"]
     use = t <= min(t_stop, t[-1])
     win = use & (t >= t_brake) & (t <= t_end) if math.isfinite(t_brake) else np.zeros_like(use)
+    # 減速之後到資料結束（吉普車停車或 log 結束）：大坡度補救、跟丟多半發生在這段
+    post = use & (t >= t_brake) if math.isfinite(t_brake) else np.zeros_like(use)
     Rw = R[win]
+    # 「太遠」只算飛機進入範圍之後：減速時飛機可能還在追近（例：減速時 R = 365 m），那不是被甩出去
+    t_enter = math.nan
+    if win.any():
+        inside = np.where(Rw <= band[1])[0]
+        t_enter = float(t[win][inside[0]]) if len(inside) else math.inf
+    above = win & (R > band[1]) & (t >= t_enter) if win.any() else win
+    below = win & (R < band[0])
     out = dict(
         name=name,
         t_brake=t_brake, t_recover=t_rec, t_end=t_end, t_stop=None if math.isinf(t_stop) else t_stop,
         jeep_v_min=float(np.nanmin(v[win])) if win.any() else math.nan,
-        # 指標一
-        out_of_band_s=time_where(t[win], (Rw < band[0]) | (Rw > band[1])) if win.any() else math.nan,
-        below_band_s=time_where(t[win], Rw < band[0]) if win.any() else math.nan,
-        above_band_s=time_where(t[win], Rw > band[1]) if win.any() else math.nan,
+        R_at_brake=float(R[win][0]) if win.any() else math.nan,
+        post_brake_s=float(t[post][-1] - t[post][0]) if post.any() else math.nan,
+        # 指標一：轉彎時間窗內，進入範圍後又跑出 [R_low, R_high] 的時間
+        below_band_s=time_where(t, below) if win.any() else math.nan,
+        above_band_s=time_where(t, above) if win.any() else math.nan,
+        out_of_band_s=math.nan,
         R_min=float(np.nanmin(Rw)) if win.any() else math.nan,
         t_R_min=float(t[win][np.nanargmin(Rw)]) if win.any() else math.nan,
         R_max_after_min=math.nan,
-        # 指標二
+        # 指標二：減速之後（到資料結束）的最長連續跟丟
+        longest_loss_after_brake_s=longest_run(t[post], valid[post] < 0.5) if post.any() else math.nan,
+        detection_after_brake=float(np.mean(valid[post] > 0.5)) if post.any() else math.nan,
         longest_loss_turn_s=longest_run(t[win], valid[win] < 0.5) if win.any() else math.nan,
         longest_loss_run_s=longest_run(t[use], valid[use] < 0.5),
         detection_turn=float(np.mean(valid[win] > 0.5)) if win.any() else math.nan,
         # 輔助
         max_bank_turn_deg=float(np.nanmax(np.abs(roll[win]))) if win.any() else math.nan,
+        max_bank_after_brake_deg=float(np.nanmax(np.abs(roll[post]))) if post.any() else math.nan,
     )
     if win.any():
-        after_min = win & (t >= out["t_R_min"])
+        out["out_of_band_s"] = out["below_band_s"] + out["above_band_s"]
+    if win.any():
+        after_min = post & (t >= out["t_R_min"])
         out["R_max_after_min"] = float(np.nanmax(R[after_min]))
     if "pan_rate_act" in log:
         pr = log["pan_rate_act"][use]
@@ -168,24 +185,26 @@ def _fmt(x, nd=1):
 
 
 def summary_table(results):
-    keys = [("t_brake", "吉普車開始減速 (s)"), ("jeep_v_min", "彎中最低車速 (m/s)"),
-            ("out_of_band_s", "★指標一：跑出 [150, 300] m 的時間 (s)"), ("below_band_s", "　其中 R < 150 m (s)"),
-            ("above_band_s", "　其中 R > 300 m (s)"), ("R_min", "最近距離 (m)"),
+    keys = [("t_brake", "吉普車開始減速 (s)"), ("R_at_brake", "開始減速時的距離 R (m)"),
+            ("jeep_v_min", "彎中最低車速 (m/s)"), ("post_brake_s", "減速後的資料長度 (s)"),
+            ("out_of_band_s", "★指標一：轉彎時跑出 [150, 300] m 的時間 (s)"), ("below_band_s", "　其中 R < 150 m (s)"),
+            ("above_band_s", "　其中進入後又 > 300 m (s)"), ("R_min", "最近距離 (m)"),
             ("R_max_after_min", "之後被甩到最遠 (m)"),
-            ("longest_loss_turn_s", "★指標二：轉彎期間最長跟丟 (s)"), ("longest_loss_run_s", "整段實驗最長跟丟 (s)"),
-            ("detection_turn", "轉彎期間偵測率"), ("max_bank_turn_deg", "轉彎期間最大坡度 (°)")]
+            ("longest_loss_after_brake_s", "★指標二：減速後最長連續跟丟 (s)"),
+            ("detection_after_brake", "減速後偵測率"), ("longest_loss_run_s", "整段實驗最長跟丟 (s)"),
+            ("max_bank_after_brake_deg", "減速後最大坡度 (°)")]
     head = "| 項目 | " + " | ".join(r["name"] for r in results) + " | 平均 ± 標準差 |"
     lines = [head, "|" + "---|" * (len(results) + 2)]
     for k, label in keys:
         vals = [r.get(k, math.nan) for r in results]
-        if k == "detection_turn":
+        if k.startswith("detection"):
             cells = [_fmt(100 * x) + "%" if x is not None and math.isfinite(x) else "—" for x in vals]
         else:
             cells = [_fmt(x) for x in vals]
         arr = np.array([x for x in vals if x is not None and math.isfinite(x)], float)
         if k == "t_brake" or len(arr) == 0:
             ms = ""
-        elif k == "detection_turn":
+        elif k.startswith("detection"):
             ms = f"{100 * arr.mean():.1f} ± {100 * arr.std(ddof=1) if len(arr) > 1 else 0:.1f}%"
         else:
             ms = f"{arr.mean():.1f} ± {arr.std(ddof=1) if len(arr) > 1 else 0:.1f}"
