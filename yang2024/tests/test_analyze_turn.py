@@ -8,7 +8,7 @@ import pytest
 from yang2024.xplane.analyze_turn import load_log, main, turn_metrics
 
 
-def make_log(path, dt=0.02, T=70.0):
+def make_log(path, dt=0.02, T=70.0, t0=0.0, noise=0.0, seed=0):
     """吉普車 20 m/s → 40 s 起以 2.5 m/s² 減速到 7 → 48 s 起加速回 20 → 65 s 停車。
     R：60 s 前從 700 線性降到 120（45 s），再升到 320（55 s）；42–44 s 跟丟。"""
     t = np.arange(0, T, dt)
@@ -19,6 +19,8 @@ def make_log(path, dt=0.02, T=70.0):
     v[m] = 7 + 2.5 * (t[m] - 48)
     v[t >= 65] = 0.0
     jx = np.concatenate([[0], np.cumsum(v[:-1] * dt)])
+    rng = np.random.default_rng(seed)
+    jx = jx + noise * rng.standard_normal(len(t))       # X-Plane 位置抖動 → 速度雜訊
     jy = np.zeros_like(t)
     R = np.interp(t, [0, 45, 55, 70], [700, 120, 320, 320])
     valid = np.ones_like(t)
@@ -27,8 +29,8 @@ def make_log(path, dt=0.02, T=70.0):
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["t", "jx", "jy", "R_truth", "meas_valid", "roll", "pan_rate_act"])
-        for row in zip(t, jx, jy, R, valid, roll, np.zeros_like(t)):
-            w.writerow([f"{x:.4f}" for x in row])
+        for row in zip(t + t0, jx, jy, R, valid, roll, np.zeros_like(t)):
+            w.writerow([f"{x:.6f}" for x in row])
     return path
 
 
@@ -47,7 +49,7 @@ def test_turn_metrics_synthetic(tmp_path):
     assert r["longest_loss_turn_s"] == pytest.approx(2.0, abs=0.05)
     assert r["max_bank_turn_deg"] == pytest.approx(47.0)
     # 停車（65 s）之後不算
-    assert r["t_stop"] == pytest.approx(65.0, abs=0.6)
+    assert r["t_stop"] == pytest.approx(65.0, abs=1.2)      # 2 s 平滑 → 晚約 1 s
 
 
 def test_cli_writes_outputs(tmp_path):
@@ -58,3 +60,13 @@ def test_cli_writes_outputs(tmp_path):
     assert (out / "turn_metrics.md").exists() and (out / "turn_compare.png").exists()
     text = (out / "turn_metrics.md").read_text(encoding="utf-8")
     assert "指標一" in text and "指標二" in text and "Run 2" in text
+
+
+def test_wall_clock_time_and_noisy_speed(tmp_path):
+    """log 的 t 是電腦時鐘、吉普車速度雜訊大（實測 20–28 m/s 跳動）時，仍要抓到真正的減速。"""
+    log = load_log(make_log(tmp_path / "log.csv", t0=1795340000.0, noise=0.04, seed=3))
+    r, _ = turn_metrics(log, band=(150, 300), after=5.0)
+    assert r["t_brake"] == pytest.approx(40.0, abs=1.5)
+    assert r["jeep_v_min"] < 9.0
+    assert r["R_min"] == pytest.approx(120.0, abs=1.0)
+    assert r["max_bank_turn_deg"] == pytest.approx(47.0)

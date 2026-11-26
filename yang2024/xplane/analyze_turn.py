@@ -37,7 +37,7 @@ def load_log(path):
     return cols
 
 
-def jeep_speed(t, jx, jy, smooth_s=1.0):
+def jeep_speed(t, jx, jy, smooth_s=2.0):
     """真值位置差分得到的吉普車速度，再做 smooth_s 秒的移動平均。"""
     v = np.full_like(t, np.nan)
     dt = np.diff(t)
@@ -53,41 +53,55 @@ def jeep_speed(t, jx, jy, smooth_s=1.0):
     return out
 
 
-def find_turn_window(t, v, v_cruise=None, drop=0.85, recover=0.95, after=5.0, stop_v=1.0):
-    """回傳 (t_brake, t_recover, t_end, t_stop)。找不到減速則 t_brake = nan。"""
+def find_turn_window(t, v, v_cruise=None, deep=0.6, recover=0.9, back=0.95, after=5.0, stop_v=1.0):
+    """回傳 (t_brake, t_recover, t_end, t_stop)。找不到轉彎則 t_brake = nan。
+
+    X-Plane 吉普車的速度雜訊很大（20 m/s 命令時 20–28 m/s 跳動），所以：
+    1. 巡航速度 = 行駛中速度的中位數；
+    2. 速度掉到巡航的 deep（60%）以下才算「真的在減速轉彎」；
+    3. 再往回找速度開始低於巡航 back（95%）的時間 = 開始減速；
+    4. 之後第一次回到巡航的 recover（90%）= 出彎；停車（< stop_v）之前沒回來就當作沒轉彎。
+    """
     finite = np.isfinite(v)
+    moving = finite & (v > 5.0)
+    if not moving.any():
+        return math.nan, math.nan, float(t[-1]), math.inf
     if v_cruise is None:
-        v_cruise = float(np.nanpercentile(v[finite], 90))
-    i_brake = None
+        v_cruise = float(np.median(v[moving]))
+    seen_cruise = False
+    i_deep = None
     for i in range(len(t)):
-        if finite[i] and v[i] < drop * v_cruise and np.nanmax(v[: i + 1]) > recover * v_cruise:
-            i_brake = i
+        if not finite[i]:
+            continue
+        if v[i] > recover * v_cruise:
+            seen_cruise = True
+        if seen_cruise and v[i] < deep * v_cruise:
+            i_deep = i
             break
-    # 停車：最後一次速度 < stop_v 之前、且之前有在開
-    t_stop = math.inf
-    moving = False
-    for i in range(len(t)):
-        if finite[i] and v[i] > 5.0:
-            moving = True
-        if moving and finite[i] and v[i] < stop_v and (i_brake is None or t[i] > t[i_brake] + 3.0):
+    t_recover, t_brake, t_stop = math.nan, math.nan, math.inf
+    i_rec = None
+    if i_deep is not None:
+        for i in range(i_deep, len(t)):
+            if not finite[i]:
+                continue
+            if v[i] < stop_v:
+                break                       # 直接停車，不是轉彎
+            if v[i] >= recover * v_cruise:
+                i_rec = i
+                break
+    if i_rec is not None:
+        j = i_deep
+        while j > 0 and (not finite[j - 1] or v[j - 1] < back * v_cruise):
+            j -= 1
+        t_brake, t_recover = float(t[j]), float(t[i_rec])
+    start = i_rec if i_rec is not None else 0
+    for i in range(start, len(t)):
+        if finite[i] and v[i] < stop_v and (i_rec is not None or np.nanmax(v[: i + 1]) > 5.0):
             t_stop = float(t[i])
             break
-    if i_brake is None:
+    if not math.isfinite(t_brake):
         return math.nan, math.nan, float(min(t[-1], t_stop)), t_stop
-    # 往前找真正開始減速的點（速度開始掉到 recover 以下）
-    j = i_brake
-    while j > 0 and finite[j - 1] and v[j - 1] < recover * v_cruise:
-        j -= 1
-    t_brake = float(t[j])
-    # 減速之後第一次回到原速 = 出彎（停車前）
-    t_recover = math.nan
-    for i in range(i_brake, len(t)):
-        if t[i] >= t_stop:
-            break
-        if finite[i] and v[i] >= recover * v_cruise:
-            t_recover = float(t[i])
-            break
-    end = (t_recover if math.isfinite(t_recover) else t[-1]) + after
+    end = t_recover + after
     return t_brake, t_recover, float(min(end, t[-1], t_stop)), t_stop
 
 
@@ -113,7 +127,7 @@ def longest_run(t, mask):
 
 
 def turn_metrics(log, band=(150.0, 300.0), after=5.0, name=""):
-    t = log["t"]
+    t = log["t"] - log["t"][0]          # log 的 t 可能是電腦時鐘 → 改成從 0 開始
     v = jeep_speed(t, log["jx"], log["jy"])
     t_brake, t_rec, t_end, t_stop = find_turn_window(t, v, after=after)
     R = log["R_truth"]
